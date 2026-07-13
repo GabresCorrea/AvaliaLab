@@ -1501,11 +1501,29 @@ function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
    documento gerado por script à parte.
    ─────────────────────────────────────────────────────────────── */
 
+/* Avaliações salvas antes de o app calcular TMB e GET não têm esses campos
+   no jsonb `resultados`. O TMB por Cunningham depende só da massa magra, que
+   toda avaliação tem — então dá para reconstruir. O fator de atividade não
+   existe nesses registros; assumimos moderado (1,55) e sinalizamos no texto. */
+function completarResultados(aval) {
+  const r = { ...(aval.resultados || {}) };
+  if (r.tmb == null && r.massaMagra > 0) {
+    r.tmb = Math.round(tmbCunningham(r.massaMagra));
+    r.tmbEstimado = true;
+  }
+  if (r.get == null && r.tmb > 0) {
+    r.fatorAtiv = r.fatorAtiv || 1.55;
+    r.get = Math.round(r.tmb * r.fatorAtiv);
+    r.getEstimado = true;
+  }
+  return r;
+}
+
 function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
   const ultima   = avaliacoes[0];
   const anterior = avaliacoes[1] || null;
   const primeira = avaliacoes[avaliacoes.length - 1];
-  const r        = ultima.resultados || {};
+  const r        = completarResultados(ultima);
   const cls      = classificar(r.percentual, aluno.sexo);
   const idade    = idadeDe(aluno.nascimento);
   const temHist  = avaliacoes.length > 1;
@@ -1576,10 +1594,17 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
       v: `${num(r.massaMagra)} kg`, t: 'Massa magra',
       d: 'Ponto de partida para as próximas avaliações', bom: null,
     });
-    destaques.push({
-      v: `${r.get}`, t: 'Gasto energético diário',
-      d: 'Estimativa em quilocalorias, incluindo o nível de atividade', bom: null,
-    });
+    if (r.get) {
+      destaques.push({
+        v: `${r.get}`, t: 'Gasto energético diário',
+        d: 'Estimativa em quilocalorias, incluindo o nível de atividade', bom: null,
+      });
+    } else {
+      destaques.push({
+        v: `${num(r.imc)}`, t: 'IMC',
+        d: classificarIMC(r.imc).label, bom: null,
+      });
+    }
   }
 
   /* ── Rosca ── */
@@ -2281,6 +2306,7 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
       </div>
     </div>
 
+    ${r.tmb ? `
     <div class="ener">
       <div>
         <div class="ener-k">Taxa metabólica basal</div>
@@ -2290,9 +2316,11 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
       <div>
         <div class="ener-k">Gasto energético total</div>
         <div class="ener-v">${r.get} <small>kcal/dia</small></div>
-        <div class="ener-d">Já considerando seu nível de atividade.</div>
+        <div class="ener-d">${r.getEstimado
+          ? 'Estimado com nível de atividade moderado.'
+          : 'Já considerando seu nível de atividade.'}</div>
       </div>
-    </div>
+    </div>` : ''}
   </section>
 
   ${tabelaDobras}
@@ -2813,7 +2841,7 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
 
               <div className="pilha g2">
                 {avals.map((a, i) => {
-                  const res = a.resultados || {};
+                  const res = completarResultados(a);
                   const cls = res.percentual ? classificar(res.percentual, aluno.sexo) : null;
                   const ant = avals[i + 1];
                   const exp = aberta === a.id;
