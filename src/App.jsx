@@ -243,6 +243,67 @@ function calcular({ protocolo, dobras, peso, altura, perimetros, idade, sexo, ni
   };
 }
 
+/* ── Termo de responsabilidade ──
+   Texto-modelo. O profissional pode editar, e a maioria não vai —
+   então ele precisa estar correto e honesto por padrão. Não promete
+   proteção jurídica que ninguém pode garantir: registra o que o aluno
+   declarou, na data em que declarou. É isso que tem valor. */
+const TERMO_MODELO = (perfil) => `TERMO DE CIÊNCIA E RESPONSABILIDADE
+
+Declaro estar ciente de que:
+
+1. A prática de exercício físico envolve riscos inerentes, incluindo, entre outros, lesões musculares, articulares e ósseas, e, em casos raros, eventos cardiovasculares.
+
+2. As informações que prestei na anamnese são verdadeiras e completas. Não omiti nenhuma condição de saúde, lesão prévia, cirurgia, uso de medicamento ou sintoma relevante.
+
+3. Estou ciente de que omitir informações de saúde compromete a segurança do programa de treinamento elaborado para mim, e assumo a responsabilidade por qualquer omissão.
+
+4. Comprometo-me a informar${perfil?.nome ? ` ${perfil.nome}` : ' meu profissional'} imediatamente sobre qualquer alteração no meu estado de saúde, surgimento de sintoma, dor, desconforto, lesão ou início de novo medicamento.
+
+5. Caso o questionário de prontidão (PAR-Q) aponte necessidade de liberação médica, comprometo-me a obtê-la antes de iniciar o programa, e estou ciente de que a recusa em fazê-lo é de minha inteira responsabilidade.
+
+6. Devo interromper o exercício imediatamente e comunicar o profissional caso sinta dor no peito, tontura, falta de ar anormal, náusea ou qualquer mal-estar durante a atividade.
+
+7. Este documento não substitui avaliação médica. O acompanhamento profissional em educação física não constitui diagnóstico, prescrição ou tratamento médico.
+
+Declaro ter lido e compreendido integralmente o presente termo antes de assiná-lo.`;
+
+/* ── Trilha de auditoria ── */
+
+const ROTULO_EVENTO = {
+  anamnese_assinada:  'Anamnese assinada',
+  avaliacao_criada:   'Avaliação registrada',
+  avaliacao_excluida: 'Avaliação excluída',
+};
+
+const descreverEvento = (h) => {
+  const d = h.detalhe || {};
+  const dt = (s) => s
+    ? new Date(s + 'T12:00').toLocaleDateString('pt-BR')
+    : '';
+
+  switch (h.evento) {
+    case 'anamnese_assinada':
+      return [
+        d.assinante ? `Assinada por ${d.assinante}` : 'Assinada pelo aluno',
+        d.termo_versao ? `Termo versão ${d.termo_versao} aceito` : null,
+      ].filter(Boolean).join('. ') + '.';
+
+    case 'avaliacao_criada':
+      return [
+        `Medição de ${dt(d.data)}`,
+        d.percentual ? `${d.percentual}% de gordura` : null,
+        PROTOCOLOS[d.protocolo]?.nome,
+      ].filter(Boolean).join(' · ');
+
+    case 'avaliacao_excluida':
+      return `Medição de ${dt(d.data)} foi removida do histórico.`;
+
+    default:
+      return '';
+  }
+};
+
 /* ───────────────────────────────────────────────────────────────
    ANAMNESE — questionário fixo
    ─────────────────────────────────────────────────────────────── */
@@ -721,6 +782,86 @@ select{
   overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;
 }
 
+/* ── Assinatura ── */
+.assina{
+  position:relative;background:var(--superficie);
+  border:1px solid var(--regua);border-radius:var(--r2);
+  height:150px;overflow:hidden;
+  transition:border-color var(--t);
+}
+.assina:hover{border-color:var(--regua-forte)}
+.assina-cv{
+  width:100%;height:100%;display:block;
+  cursor:crosshair;touch-action:none; /* impede scroll ao assinar */
+  position:relative;z-index:2;
+}
+.assina-dica{
+  position:absolute;inset:0;display:grid;place-items:center;
+  color:var(--tenue);font-size:14px;pointer-events:none;z-index:1;
+}
+.assina-linha{
+  position:absolute;left:24px;right:24px;bottom:34px;
+  height:1px;background:var(--regua);pointer-events:none;z-index:1;
+}
+
+/* ── Termo ── */
+.termo{
+  background:var(--papel);border:1px solid var(--regua);
+  border-radius:var(--r2);padding:var(--e4);
+  max-height:220px;overflow-y:auto;
+  font-size:13px;line-height:1.65;color:var(--grafite);
+  white-space:pre-wrap;
+}
+
+.caixa{
+  display:flex;align-items:flex-start;gap:var(--e3);
+  padding:var(--e3) var(--e4);cursor:pointer;
+  border:1px solid var(--regua);border-radius:var(--r2);
+  background:var(--superficie);transition:all var(--t);
+  text-align:left;width:100%;font-family:inherit;
+}
+.caixa:hover{border-color:var(--regua-forte)}
+.caixa.marcada{border-color:var(--aco);background:var(--aco-claro)}
+.caixa-q{
+  width:20px;height:20px;flex-shrink:0;margin-top:1px;
+  border:1.5px solid var(--regua-forte);border-radius:5px;
+  display:grid;place-items:center;transition:all var(--t);
+  color:transparent;background:var(--superficie);
+}
+.caixa.marcada .caixa-q{
+  background:var(--aco);border-color:var(--aco);color:#fff;
+}
+.caixa-t{font-size:14px;line-height:1.5}
+
+/* ── Trilha de auditoria ── */
+.trilha{position:relative;padding-left:22px}
+.trilha::before{
+  content:'';position:absolute;left:5px;top:6px;bottom:6px;
+  width:1px;background:var(--regua);
+}
+.trilha-i{position:relative;padding:var(--e3) 0}
+.trilha-i::before{
+  content:'';position:absolute;left:-21px;top:17px;
+  width:9px;height:9px;border-radius:50%;
+  background:var(--superficie);border:2px solid var(--regua-forte);
+}
+.trilha-i.forte::before{border-color:var(--aco);background:var(--aco)}
+.trilha-e{font-size:14px;font-weight:600}
+.trilha-d{font-size:12.5px;color:var(--sombra-txt);margin-top:2px;line-height:1.45}
+.trilha-q{
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  color:var(--tenue);margin-top:3px;
+}
+
+.selado{
+  display:flex;align-items:center;gap:var(--e3);
+  background:var(--verde-claro);border:1px solid #BFDDD1;
+  border-left:3px solid var(--verde);
+  border-radius:var(--r2);padding:var(--e3) var(--e4);
+}
+.selado-t{font-size:13.5px;font-weight:600;color:#1F5A48}
+.selado-d{font-size:12.5px;color:#3E7A63;margin-top:1px;line-height:1.45}
+
 /* ── Responsivo ── */
 @media (max-width:640px){
   .t1{font-size:23px}
@@ -775,6 +916,8 @@ const IcoFogo    = (p) => <Ico {...p} d={<><path d="M12 22a6 6 0 0 0 6-6c0-4-3-5
 const IcoRelogio = (p) => <Ico {...p} d={<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></>} />;
 const IcoX       = (p) => <Ico {...p} d={<path d="M18 6 6 18M6 6l12 12"/>} />;
 const IcoFiltro  = (p) => <Ico {...p} d={<path d="M3 5h18l-7 8v6l-4 2v-8L3 5z"/>} />;
+const IcoEscudo  = (p) => <Ico {...p} d={<><path d="M12 3 4 6v6c0 4.5 3.2 8.3 8 9 4.8-.7 8-4.5 8-9V6l-8-3z"/><path d="m9 12 2 2 4-4"/></>} />;
+const IcoHistorico = (p) => <Ico {...p} d={<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M3.5 9a9 9 0 0 1 1.5-3"/></>} />;
 const IcoNota    = (p) => <Ico {...p} d={<><path d="M11 4H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-5"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>} />;
 
 /* ───────────────────────────────────────────────────────────────
@@ -995,6 +1138,97 @@ const GraficoLinha = ({ series, altura = 150 }) => {
           </span>
         ))}
       </div>
+    </div>
+  );
+};
+
+/* ── Assinatura em canvas ──
+   O aluno assina com o dedo (celular) ou o mouse. O traço é gravado
+   como PNG e guardado junto com a anamnese. Não é assinatura digital
+   certificada (ICP-Brasil) — é registro de que aquela pessoa assinou
+   aquele documento naquela data. O app é honesto sobre isso. */
+const Assinatura = ({ valor, aoMudar }) => {
+  const ref = useRef(null);
+  const desenhando = useRef(false);
+  const ultimo = useRef(null);
+  const [vazio, setVazio] = useState(!valor);
+
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    // Resolução real do dispositivo, senão o traço fica serrilhado
+    const escala = window.devicePixelRatio || 1;
+    const r = cv.getBoundingClientRect();
+    cv.width = r.width * escala;
+    cv.height = r.height * escala;
+    const ctx = cv.getContext('2d');
+    ctx.scale(escala, escala);
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#16181A';
+  }, []);
+
+  const ponto = (e) => {
+    const r = ref.current.getBoundingClientRect();
+    const t = e.touches?.[0] || e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  };
+
+  const comecar = (e) => {
+    e.preventDefault();
+    desenhando.current = true;
+    ultimo.current = ponto(e);
+  };
+
+  const mover = (e) => {
+    if (!desenhando.current) return;
+    e.preventDefault();
+    const ctx = ref.current.getContext('2d');
+    const p = ponto(e);
+    ctx.beginPath();
+    ctx.moveTo(ultimo.current.x, ultimo.current.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    ultimo.current = p;
+    if (vazio) setVazio(false);
+  };
+
+  const parar = () => {
+    if (!desenhando.current) return;
+    desenhando.current = false;
+    aoMudar(ref.current.toDataURL('image/png'));
+  };
+
+  const limpar = () => {
+    const cv = ref.current;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    setVazio(true);
+    aoMudar(null);
+  };
+
+  return (
+    <div className="pilha g2">
+      <div className="assina">
+        <canvas
+          ref={ref}
+          className="assina-cv"
+          onMouseDown={comecar} onMouseMove={mover}
+          onMouseUp={parar} onMouseLeave={parar}
+          onTouchStart={comecar} onTouchMove={mover} onTouchEnd={parar}
+        />
+        {vazio && (
+          <div className="assina-dica">Assine aqui com o dedo</div>
+        )}
+        <div className="assina-linha" />
+      </div>
+      {!vazio && (
+        <button type="button" className="btn btn-3" onClick={limpar}
+          style={{ alignSelf: 'flex-start', fontSize: 13 }}>
+          Limpar e assinar de novo
+        </button>
+      )}
     </div>
   );
 };
@@ -1528,6 +1762,9 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
   const idade    = idadeDe(aluno.nascimento);
   const temHist  = avaliacoes.length > 1;
 
+  // Páginas: capa, composição, perimetria/saúde e (se houver) o anexo assinado.
+  const totalPgs = (anamnese ? 3 : 2) + (anamnese?.assinatura ? 1 : 0);
+
   const data = (d) => new Date(d + 'T12:00').toLocaleDateString('pt-BR');
   const num  = (v, casas = 1) => Number(v).toFixed(casas).replace('.', ',');
 
@@ -1912,6 +2149,90 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
       <div class="reco">${ultima.observacoes.replace(/\n/g, '<br>')}</div>
     </section>` : '';
 
+  /* ── Anexo: o documento assinado ──
+        Sem esta página, o prontuário não serve de nada — a prova
+        ficaria só no banco. Aqui ela vira papel. */
+  const temAssinatura = !!anamnese?.assinatura;
+
+  const anexoAssinatura = temAssinatura ? `
+  <div class="pg">
+    <div class="anexo-topo">
+      <div>
+        <div class="capa-olho">Anexo</div>
+        <div class="anexo-tit">Declaração e assinatura</div>
+      </div>
+      <div class="anexo-selo">Documento assinado</div>
+    </div>
+
+    <section class="bloco">
+      <h2>Registro do aceite</h2>
+      <table class="tb">
+        <tbody>
+          <tr>
+            <td>Assinado por</td>
+            <td class="dir forte">${anamnese.assinante_nome || aluno.nome}</td>
+          </tr>
+          <tr>
+            <td>Data e hora</td>
+            <td class="dir mn forte">${new Date(anamnese.assinada_em || anamnese.preenchida_em)
+              .toLocaleString('pt-BR', {
+                day: '2-digit', month: '2-digit', year: 'numeric',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+              })}</td>
+          </tr>
+          <tr>
+            <td>Declarou veracidade das informações</td>
+            <td class="dir forte">${anamnese.declarou_veracidade ? 'Sim' : 'Não'}</td>
+          </tr>
+          ${anamnese.aceitou_termo ? `
+          <tr>
+            <td>Aceitou o termo de responsabilidade</td>
+            <td class="dir forte">Sim, versão ${anamnese.termo_versao}</td>
+          </tr>` : ''}
+          ${anamnese.user_agent ? `
+          <tr>
+            <td>Dispositivo</td>
+            <td class="dir tenue" style="font-size:9px">${anamnese.user_agent.slice(0, 90)}</td>
+          </tr>` : ''}
+        </tbody>
+      </table>
+    </section>
+
+    ${anamnese.termo_texto ? `
+    <section class="bloco">
+      <h2>Termo aceito, na íntegra</h2>
+      <div class="termo-pdf">${anamnese.termo_texto
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/\n/g, '<br>')}</div>
+    </section>` : ''}
+
+    <section class="bloco quebra">
+      <h2>Assinatura</h2>
+      <div class="assina-pdf">
+        <img src="${anamnese.assinatura}" alt="">
+        <div class="assina-nome">${anamnese.assinante_nome || aluno.nome}</div>
+        <div class="assina-data">
+          Assinado em ${new Date(anamnese.assinada_em || anamnese.preenchida_em)
+            .toLocaleDateString('pt-BR')}
+        </div>
+      </div>
+    </section>
+
+    <div class="glos">
+      Este anexo registra o que o avaliado declarou e em que data. Ele constitui
+      registro profissional de saúde, e não assinatura digital com certificado
+      ICP-Brasil. A guarda deste documento é de responsabilidade do profissional
+      que o emitiu.
+    </div>
+
+    <div class="rod">
+      <div>
+        <b>${aluno.nome}</b> &middot; Anexo de declaração e assinatura
+      </div>
+      <div class="rod-p">${totalPgs} / ${totalPgs}</div>
+    </div>
+  </div>` : '';
+
   /* ── HTML ── */
   const html = `<!DOCTYPE html>
 <html lang="pt-BR"><head>
@@ -2201,6 +2522,42 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
   }
   .glos b{color:#55595E;font-weight:600}
 
+  /* ── Anexo assinado ── */
+  .anexo-topo{
+    display:flex;justify-content:space-between;align-items:flex-start;
+    padding-bottom:14px;margin-bottom:9mm;border-bottom:2px solid #16181A;
+  }
+  .anexo-tit{
+    font-family:'Instrument Sans',sans-serif;font-weight:600;
+    font-size:26px;letter-spacing:-.02em;margin-top:4px;
+  }
+  .anexo-selo{
+    font-size:9px;font-weight:600;color:#2F7A63;
+    text-transform:uppercase;letter-spacing:.11em;
+    border:1.5px solid #BFDDD1;background:#EAF4F0;
+    border-radius:20px;padding:5px 12px;white-space:nowrap;
+  }
+
+  .termo-pdf{
+    font-size:10px;line-height:1.65;color:#55595E;
+    background:#FAFAF8;border:1px solid #E2E5E3;
+    border-radius:8px;padding:14px 16px;
+  }
+
+  .assina-pdf{
+    border:1px solid #E2E5E3;border-radius:9px;
+    padding:20px;text-align:center;background:#fff;
+  }
+  .assina-pdf img{
+    max-height:80px;max-width:280px;display:block;margin:0 auto 6px;
+  }
+  .assina-nome{
+    font-size:12px;font-weight:600;
+    border-top:1px solid #16181A;
+    display:inline-block;padding:7px 40px 0;margin-top:2px;
+  }
+  .assina-data{font-size:9.5px;color:#878C92;margin-top:5px}
+
   @media print{
     body{background:#fff}
     .pg{margin:0;box-shadow:none;width:auto;min-height:auto;padding:15mm 16mm}
@@ -2254,7 +2611,7 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
     </div>
     <div class="capa-data">
       Emitido em ${new Date().toLocaleDateString('pt-BR')}<br>
-      Página <span class="rod-p">1</span> de <span class="rod-p">${anamnese ? 3 : 2}</span>
+      Página <span class="rod-p">1</span> de <span class="rod-p">${totalPgs}</span>
     </div>
   </div>
 </div>
@@ -2331,7 +2688,7 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
     <div>
       <b>${aluno.nome}</b> &middot; Avaliação de ${data(ultima.data)}
     </div>
-    <div class="rod-p">2 / ${anamnese ? 3 : 2}</div>
+    <div class="rod-p">2 / ${totalPgs}</div>
   </div>
 </div>
 
@@ -2356,9 +2713,11 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
       Emitido por ${perfil.nome || ''}${perfil.cref ? `, CREF ${perfil.cref}` : ''}
       em ${new Date().toLocaleDateString('pt-BR')}.
     </div>
-    <div class="rod-p">${anamnese ? '3 / 3' : '3 / 2'}</div>
+    <div class="rod-p">3 / ${totalPgs}</div>
   </div>
 </div>
+
+${anexoAssinatura}
 
 <script>
   window.onload = () => { setTimeout(() => window.print(), 800); };
@@ -2483,11 +2842,16 @@ function Entrada({ toast }) {
    ─────────────────────────────────────────────────────────────── */
 
 function AnamnesePublica({ token }) {
-  const [aluno, setAluno]     = useState(null);
-  const [resp, setResp]       = useState({});
-  const [busy, setBusy]       = useState(false);
-  const [pronto, setPronto]   = useState(false);
-  const [erro, setErro]       = useState('');
+  const [dados, setDados]   = useState(null);   // aluno + termo + profissional
+  const [resp, setResp]     = useState({});
+  const [assinatura, setAssinatura] = useState(null);
+  const [nomeAssina, setNomeAssina] = useState('');
+  const [declarou, setDeclarou]     = useState(false);
+  const [aceitouTermo, setAceitou]  = useState(false);
+  const [busy, setBusy]     = useState(false);
+  const [pronto, setPronto] = useState(false);
+  const [erro, setErro]     = useState('');
+  const [expirado, setExpirado]     = useState(false);
   const [carregando, setCarregando] = useState(true);
 
   const chave = 'al:anam:' + token;
@@ -2497,27 +2861,34 @@ function AnamnesePublica({ token }) {
       const { data, error } = await supabase.rpc('al_buscar_por_token', { p_token: token });
       const reg = data?.[0];
       if (error || !reg) {
-        setErro('Este link não é válido ou já expirou.');
+        setErro('Este link não é válido.');
         setCarregando(false);
         return;
       }
-      setAluno({ id: reg.id, nome: reg.nome });
-      if (reg.ja_preenchida) setPronto(true);
-      else {
-        try {
-          const salvo = localStorage.getItem(chave);
-          if (salvo) setResp(JSON.parse(salvo));
-        } catch { /* ignora rascunho corrompido */ }
-      }
+      if (reg.expirado) { setExpirado(true); setCarregando(false); return; }
+      if (reg.ja_preenchida) { setPronto(true); setCarregando(false); return; }
+
+      setDados(reg);
+      try {
+        const salvo = localStorage.getItem(chave);
+        if (salvo) {
+          const s = JSON.parse(salvo);
+          setResp(s.resp || {});
+          setNomeAssina(s.nome || '');
+        }
+      } catch { /* rascunho corrompido: ignora */ }
       setCarregando(false);
     })();
   }, [token, chave]);
 
-  // Rascunho: o aluno pode fechar e voltar depois
+  // Rascunho: o aluno pode fechar e voltar depois.
+  // A assinatura não é salva — tem que ser feita no ato do envio.
   useEffect(() => {
     if (pronto || !Object.keys(resp).length) return;
-    try { localStorage.setItem(chave, JSON.stringify(resp)); } catch { /* cheio */ }
-  }, [resp, chave, pronto]);
+    try {
+      localStorage.setItem(chave, JSON.stringify({ resp, nome: nomeAssina }));
+    } catch { /* storage cheio */ }
+  }, [resp, nomeAssina, chave, pronto]);
 
   const set = (k, v) => { setResp((x) => ({ ...x, [k]: v })); setErro(''); };
 
@@ -2529,23 +2900,61 @@ function AnamnesePublica({ token }) {
   const obrigatorias = ANAMNESE.flatMap((s) => s.itens)
     .filter((i) => i.t === 'sn' || i.t === 'unica');
   const respondidas = obrigatorias.filter((i) => resp[i.k]).length;
-  const progresso = Math.round((respondidas / obrigatorias.length) * 100);
+
+  const temTermo = !!dados?.termo_texto;
+  const passos = obrigatorias.length + 3 + (temTermo ? 1 : 0);
+  const feitos = respondidas
+    + (assinatura ? 1 : 0)
+    + (nomeAssina.trim().length >= 3 ? 1 : 0)
+    + (declarou ? 1 : 0)
+    + (temTermo && aceitouTermo ? 1 : 0);
+  const progresso = Math.round((feitos / passos) * 100);
 
   const enviar = async () => {
     const falta = obrigatorias.find((i) => !resp[i.k]);
     if (falta) {
-      setErro('Ainda faltam respostas. Role a página e confira as perguntas em destaque.');
-      const el = document.getElementById('p-' + falta.k);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setErro('Ainda faltam respostas. Role a página e confira as perguntas marcadas.');
+      document.getElementById('p-' + falta.k)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
+    if (temTermo && !aceitouTermo) {
+      setErro('É preciso ler e aceitar o termo de responsabilidade.');
+      document.getElementById('assinar')?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+    if (nomeAssina.trim().length < 3) {
+      setErro('Digite seu nome completo para assinar.');
+      document.getElementById('assinar')?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+    if (!declarou) {
+      setErro('É preciso declarar que as informações são verdadeiras.');
+      document.getElementById('assinar')?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+    if (!assinatura) {
+      setErro('Assine no quadro antes de enviar.');
+      document.getElementById('assinar')?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+
     setBusy(true);
     const { error } = await supabase.rpc('al_enviar_anamnese', {
-      p_token: token, p_respostas: resp,
+      p_token: token,
+      p_respostas: resp,
+      p_assinatura: assinatura,
+      p_nome: nomeAssina.trim(),
+      p_termo_versao: temTermo ? dados.termo_versao : null,
+      p_termo_texto: temTermo ? dados.termo_texto : null,
+      p_user_agent: navigator.userAgent.slice(0, 300),
     });
     setBusy(false);
+
     if (error) {
-      if ((error.message || '').includes('ja_preenchida')) { setPronto(true); return; }
+      const m = error.message || '';
+      if (m.includes('ja_preenchida')) { setPronto(true); return; }
+      if (m.includes('token_expirado')) { setExpirado(true); return; }
       setErro('Não foi possível enviar. Verifique sua conexão e tente de novo.');
       return;
     }
@@ -2560,7 +2969,21 @@ function AnamnesePublica({ token }) {
     </div>
   );
 
-  if (erro && !aluno) return (
+  if (expirado) return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 'var(--e4)' }}>
+      <Cart style={{ maxWidth: 380, textAlign: 'center' }}>
+        <div className="pilha g3" style={{ alignItems: 'center' }}>
+          <span style={{ color: 'var(--tenue)' }}><IcoRelogio size={28} /></span>
+          <div className="tit t3">Este link expirou</div>
+          <div className="dica">
+            Por segurança, o link vale sete dias. Peça um novo ao seu profissional.
+          </div>
+        </div>
+      </Cart>
+    </div>
+  );
+
+  if (erro && !dados) return (
     <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 'var(--e4)' }}>
       <Cart style={{ maxWidth: 380, textAlign: 'center' }}>
         <div className="pilha g3" style={{ alignItems: 'center' }}>
@@ -2583,10 +3006,10 @@ function AnamnesePublica({ token }) {
           }}>
             <IcoCheck size={26} />
           </div>
-          <div className="tit t2">Respostas enviadas</div>
+          <div className="tit t2">Recebido e assinado</div>
           <div style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
-            Obrigado, {aluno.nome.split(' ')[0]}. Seu profissional já recebeu
-            tudo. Pode fechar esta página.
+            Suas respostas foram registradas com data e hora. Seu profissional
+            já tem tudo. Pode fechar esta página.
           </div>
         </div>
       </Cart>
@@ -2601,19 +3024,24 @@ function AnamnesePublica({ token }) {
         </div>
         <div className="prog-l">
           <span className="marca" style={{ fontSize: 13 }}>Avalia<em>Lab</em></span>
-          <span className="mono">{respondidas} de {obrigatorias.length}</span>
+          <span className="mono">{progresso}%</span>
         </div>
       </div>
 
       <div style={{ marginBottom: 'var(--e6)' }}>
-        <h1 className="tit t1">Olá, {aluno.nome.split(' ')[0]}.</h1>
+        <h1 className="tit t1">Olá, {dados.nome.split(' ')[0]}.</h1>
         <p style={{
           fontSize: 14.5, color: 'var(--grafite)',
           marginTop: 'var(--e2)', lineHeight: 1.6,
         }}>
-          Estas perguntas levam cerca de cinco minutos e ajudam seu profissional
-          a montar um treino seguro para você. Responda com sinceridade — nada
-          aqui é julgamento.
+          Estas perguntas levam cerca de cinco minutos e ajudam
+          {dados.prof_nome ? ` ${dados.prof_nome.split(' ')[0]}` : ' seu profissional'} a
+          montar um treino seguro para você. Ao final, você assina — isso registra
+          o que foi informado e em que data.
+        </p>
+        <p className="dica" style={{ marginTop: 'var(--e2)' }}>
+          Responda com sinceridade. Nada aqui é julgamento, e omitir uma
+          condição de saúde é o que coloca você em risco.
         </p>
       </div>
 
@@ -2639,8 +3067,8 @@ function AnamnesePublica({ token }) {
                   return (
                     <div key={it.k} id={'p-' + it.k}>
                       <div style={{
-                        fontSize: 14.5, lineHeight: 1.5, marginBottom: 'var(--e3)',
-                        fontWeight: 500,
+                        fontSize: 14.5, lineHeight: 1.5,
+                        marginBottom: 'var(--e3)', fontWeight: 500,
                       }}>
                         {it.q}
                         {falta && (
@@ -2653,8 +3081,7 @@ function AnamnesePublica({ token }) {
                       {it.t === 'sn' && (
                         <div className="fila g2">
                           {['Não', 'Sim'].map((op) => (
-                            <Btn key={op}
-                              variante={resp[it.k] === op ? '1' : '2'}
+                            <Btn key={op} variante={resp[it.k] === op ? '1' : '2'}
                               cheio onClick={() => set(it.k, op)}>{op}</Btn>
                           ))}
                         </div>
@@ -2663,8 +3090,7 @@ function AnamnesePublica({ token }) {
                       {it.t === 'unica' && (
                         <div className="pilha g2">
                           {it.opcoes.map((op) => (
-                            <Btn key={op}
-                              variante={resp[it.k] === op ? '1' : '2'}
+                            <Btn key={op} variante={resp[it.k] === op ? '1' : '2'}
                               cheio onClick={() => set(it.k, op)}
                               style={{ justifyContent: 'flex-start', fontWeight: 500 }}>
                               {op}
@@ -2696,11 +3122,83 @@ function AnamnesePublica({ token }) {
             </Cart>
           </section>
         ))}
+
+        {/* ── Termo e assinatura ── */}
+        <section className="pilha g3" id="assinar">
+          <div>
+            <span className="olho">Declaração e assinatura</span>
+            <p className="dica" style={{ marginTop: 4 }}>
+              Esta é a parte que transforma suas respostas em um registro
+              com data. Leia antes de assinar.
+            </p>
+          </div>
+
+          <Cart>
+            <div className="pilha g5">
+
+              {temTermo && (
+                <div className="pilha g3">
+                  <span style={{ fontSize: 13.5, fontWeight: 600 }}>
+                    Termo de responsabilidade
+                  </span>
+                  <div className="termo">{dados.termo_texto}</div>
+                  <button type="button"
+                    className={`caixa ${aceitouTermo ? 'marcada' : ''}`}
+                    onClick={() => { setAceitou(!aceitouTermo); setErro(''); }}
+                    aria-pressed={aceitouTermo}>
+                    <span className="caixa-q"><IcoCheck size={13} /></span>
+                    <span className="caixa-t">
+                      Li o termo acima por completo e concordo com o seu conteúdo.
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              <div className="pilha g3">
+                <button type="button"
+                  className={`caixa ${declarou ? 'marcada' : ''}`}
+                  onClick={() => { setDeclarou(!declarou); setErro(''); }}
+                  aria-pressed={declarou}>
+                  <span className="caixa-q"><IcoCheck size={13} /></span>
+                  <span className="caixa-t">
+                    Declaro que todas as informações que dei aqui são verdadeiras
+                    e completas, e que não omiti nenhuma condição de saúde,
+                    lesão ou medicamento.
+                  </span>
+                </button>
+              </div>
+
+              <Campo rot="Seu nome completo" id="nomeass"
+                dica="Digite como está no seu documento.">
+                <input id="nomeass" value={nomeAssina}
+                  autoComplete="name"
+                  placeholder={dados.nome}
+                  onChange={(e) => { setNomeAssina(e.target.value); setErro(''); }} />
+              </Campo>
+
+              <div className="pilha g2">
+                <span className="rot">Assinatura</span>
+                <Assinatura valor={assinatura}
+                  aoMudar={(v) => { setAssinatura(v); setErro(''); }} />
+                <span className="dica">
+                  Use o dedo, se estiver no celular. Pode limpar e refazer
+                  quantas vezes quiser.
+                </span>
+              </div>
+
+              <div className="aviso aviso-info" style={{ fontSize: 12.5 }}>
+                Ao enviar, ficam registrados a data, a hora e o dispositivo usado.
+                Este documento é um registro profissional de saúde — não é
+                assinatura digital com certificado ICP-Brasil.
+              </div>
+            </div>
+          </Cart>
+        </section>
       </div>
 
       <Btn variante="1" tam="g" cheio carregando={busy} onClick={enviar}
         style={{ marginTop: 'var(--e5)' }}>
-        Enviar respostas
+        Assinar e enviar
       </Btn>
     </div>
   );
@@ -2718,23 +3216,47 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
   const [load, setLoad]     = useState(true);
   const [aberta, setAberta] = useState(null);
   const [excluirAval, setExcluirAval] = useState(null);
+  const [renovando, setRenovando] = useState(false);
+  const [tokenAtual, setTokenAtual] = useState(aluno.token_anamnese);
+  const [expiraEm, setExpiraEm] = useState(aluno.token_expira_em);
+  const [historico, setHistorico] = useState([]);
 
   const carregar = useCallback(async () => {
     setLoad(true);
-    const [{ data: a }, { data: an }] = await Promise.all([
+    const [{ data: a }, { data: an }, { data: h }] = await Promise.all([
       supabase.from('al_avaliacoes').select('*')
         .eq('aluno_id', aluno.id).order('data', { ascending: false }),
       supabase.from('al_anamneses').select('*')
         .eq('aluno_id', aluno.id).maybeSingle(),
+      supabase.rpc('al_historico', { p_aluno: aluno.id }),
     ]);
     setAvals(a || []);
     setAnam(an);
+    setHistorico(h || []);
     setLoad(false);
   }, [aluno.id]);
 
   useEffect(() => { carregar(); }, [carregar]);
 
-  const link = `${window.location.origin}/a/${aluno.token_anamnese}`;
+  const link = `${window.location.origin}/a/${tokenAtual}`;
+
+  const linkExpirado = expiraEm ? new Date(expiraEm) < new Date() : false;
+  const diasRestantes = (() => {
+    if (!expiraEm) return null;
+    const d = Math.ceil((new Date(expiraEm) - new Date()) / 86400000);
+    if (d <= 0) return null;
+    return d === 1 ? '1 dia' : `${d} dias`;
+  })();
+
+  const renovarLink = async () => {
+    setRenovando(true);
+    const { data, error } = await supabase.rpc('al_renovar_token', { p_aluno: aluno.id });
+    setRenovando(false);
+    if (error || !data) { toast('Não foi possível gerar o link', 'erro'); return; }
+    setTokenAtual(data);
+    setExpiraEm(new Date(Date.now() + 7 * 86400000).toISOString());
+    toast('Link novo gerado. Vale por sete dias.', 'ok');
+  };
 
   const copiar = async () => {
     try {
@@ -2801,6 +3323,7 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
         opcoes={[
           { v: 'avaliacoes', l: 'Avaliações', selo: avals.length || null },
           { v: 'anamnese', l: 'Anamnese', ponto: !!anam },
+          { v: 'historico', l: 'Histórico', selo: historico.length || null },
         ]}
         valor={aba} aoTrocar={setAba} />
 
@@ -2946,22 +3469,51 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
         <div className="pilha g4">
           <Cart>
             <div className="pilha g3">
-              <div>
-                <span className="olho">Link para o aluno</span>
-                <p className="dica" style={{ marginTop: 4 }}>
-                  {anam
-                    ? 'Já preenchida. Um novo envio pelo mesmo link não é aceito.'
-                    : 'Mande por WhatsApp. Ele preenche pelo celular, sem criar conta.'}
-                </p>
+              <div className="entre">
+                <div>
+                  <span className="olho">Link para o aluno</span>
+                  <p className="dica" style={{ marginTop: 4 }}>
+                    {anam
+                      ? 'Já assinada. O link não aceita novo envio.'
+                      : 'Mande por WhatsApp. Ele preenche e assina pelo celular.'}
+                  </p>
+                </div>
+                {!anam && (
+                  linkExpirado
+                    ? <Selo tom="alto">Expirado</Selo>
+                    : <Selo tom="info">Vale {diasRestantes}</Selo>
+                )}
               </div>
-              <div className="fila g2">
-                <input readOnly value={link} className="mono"
-                  onClick={(e) => e.target.select()}
-                  style={{ fontSize: 12.5, color: 'var(--grafite)' }} />
-                <Btn variante="2" onClick={copiar}>
-                  <IcoCopia size={16} /> Copiar
-                </Btn>
-              </div>
+
+              {!anam && (
+                <>
+                  <div className="fila g2">
+                    <input readOnly value={link} className="mono"
+                      onClick={(e) => e.target.select()}
+                      disabled={linkExpirado}
+                      style={{ fontSize: 12.5, color: 'var(--grafite)' }} />
+                    <Btn variante="2" onClick={copiar} disabled={linkExpirado}>
+                      <IcoCopia size={16} /> Copiar
+                    </Btn>
+                  </div>
+
+                  {linkExpirado && (
+                    <div className="aviso aviso-alerta fila g3">
+                      <IcoAviso size={18} />
+                      <span>
+                        Este link passou dos sete dias. Gere um novo para
+                        que o aluno possa preencher.
+                      </span>
+                    </div>
+                  )}
+
+                  <Btn variante={linkExpirado ? '1' : '3'} tam="p"
+                    carregando={renovando} onClick={renovarLink}
+                    style={linkExpirado ? {} : { alignSelf: 'flex-start' }}>
+                    Gerar link novo
+                  </Btn>
+                </>
+              )}
             </div>
           </Cart>
 
@@ -2970,13 +3522,55 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
               <Vazio
                 ico={<IcoRelogio size={30} />}
                 titulo="Aguardando o aluno"
-                desc="As respostas aparecem aqui assim que ele enviar o formulário." />
+                desc="As respostas aparecem aqui assim que ele assinar e enviar." />
             </Cart>
           ) : (
             <>
-              <div className="dica">
-                Preenchida em {new Date(anam.preenchida_em).toLocaleDateString('pt-BR')}
-              </div>
+              {anam.assinatura ? (
+                <Cart>
+                  <div className="pilha g4">
+                    <div className="selado">
+                      <span style={{ color: 'var(--verde)', flexShrink: 0 }}>
+                        <IcoEscudo size={20} />
+                      </span>
+                      <div>
+                        <div className="selado-t">Assinada e registrada</div>
+                        <div className="selado-d">
+                          Por {anam.assinante_nome}, em{' '}
+                          {new Date(anam.assinada_em || anam.preenchida_em)
+                            .toLocaleString('pt-BR', {
+                              day: '2-digit', month: '2-digit', year: 'numeric',
+                              hour: '2-digit', minute: '2-digit',
+                            })}.
+                          {anam.declarou_veracidade && ' Declarou veracidade das informações.'}
+                          {anam.aceitou_termo && ` Aceitou o termo (versão ${anam.termo_versao}).`}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pilha g2">
+                      <span className="olho">Assinatura</span>
+                      <div style={{
+                        background: 'var(--papel)', border: '1px solid var(--regua)',
+                        borderRadius: 'var(--r2)', padding: 'var(--e3)',
+                        display: 'grid', placeItems: 'center',
+                      }}>
+                        <img src={anam.assinatura} alt="Assinatura do aluno"
+                          style={{ maxHeight: 90, maxWidth: '100%' }} />
+                      </div>
+                    </div>
+                  </div>
+                </Cart>
+              ) : (
+                <div className="aviso aviso-alerta fila g3">
+                  <IcoAviso size={18} />
+                  <span>
+                    Esta anamnese foi preenchida antes da assinatura existir.
+                    Ela não tem valor de prova. Para regularizar, exclua e
+                    peça ao aluno que preencha de novo.
+                  </span>
+                </div>
+              )}
 
               {ANAMNESE.map((sec) => {
                 const alertas = sec.itens.filter(
@@ -3018,6 +3612,48 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
                 );
               })}
             </>
+          )}
+        </div>
+      )}
+
+      {!load && aba === 'historico' && (
+        <div className="pilha g4">
+          <div className="aviso aviso-info fila g3">
+            <IcoEscudo size={18} />
+            <span>
+              Este histórico não pode ser editado nem apagado — nem por você.
+              É o que dá peso ao prontuário: um registro que o próprio
+              profissional pudesse alterar depois não provaria nada.
+            </span>
+          </div>
+
+          {!historico.length ? (
+            <Cart>
+              <Vazio
+                ico={<IcoHistorico size={30} />}
+                titulo="Nada registrado ainda"
+                desc="Cada anamnese assinada e cada avaliação lançada aparece aqui, com data e hora." />
+            </Cart>
+          ) : (
+            <Cart>
+              <div className="trilha">
+                {historico.map((h, i) => {
+                  const forte = h.evento === 'anamnese_assinada';
+                  return (
+                    <div key={i} className={`trilha-i ${forte ? 'forte' : ''}`}>
+                      <div className="trilha-e">{ROTULO_EVENTO[h.evento] || h.evento}</div>
+                      <div className="trilha-d">{descreverEvento(h)}</div>
+                      <div className="trilha-q">
+                        {new Date(h.em).toLocaleString('pt-BR', {
+                          day: '2-digit', month: '2-digit', year: 'numeric',
+                          hour: '2-digit', minute: '2-digit',
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Cart>
           )}
         </div>
       )}
@@ -3281,6 +3917,43 @@ function Perfil({ perfil, aoAtualizar, toast }) {
   const [subindo, setSubindo] = useState(false);
   const ref = useRef();
 
+  const [termo, setTermo] = useState('');
+  const [termoVersao, setTermoVersao] = useState(null);
+  const [termoSalvo, setTermoSalvo] = useState('');
+  const [salvandoTermo, setSalvandoTermo] = useState(false);
+  const [confirmarTermo, setConfirmarTermo] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('al_termos')
+        .select('texto, versao')
+        .eq('profile_id', perfil.id)
+        .order('versao', { ascending: false })
+        .limit(1);
+      const t = data?.[0];
+      if (t) {
+        setTermo(t.texto);
+        setTermoSalvo(t.texto);
+        setTermoVersao(t.versao);
+      } else {
+        setTermo(TERMO_MODELO(perfil));
+      }
+    })();
+  }, [perfil]);
+
+  const termoMudou = termo.trim() !== termoSalvo.trim() && termo.trim().length > 0;
+
+  const salvarTermo = async () => {
+    setSalvandoTermo(true);
+    const { data, error } = await supabase.rpc('al_salvar_termo', { p_texto: termo.trim() });
+    setSalvandoTermo(false);
+    setConfirmarTermo(false);
+    if (error) { toast('Não foi possível salvar o termo', 'erro'); return; }
+    setTermoSalvo(termo.trim());
+    setTermoVersao(data);
+    toast(`Termo salvo. Versão ${data}.`, 'ok');
+  };
+
   const salvar = async () => {
     setBusy(true);
     const { error } = await supabase.from('al_profiles').update(f).eq('id', perfil.id);
@@ -3334,6 +4007,53 @@ function Perfil({ perfil, aoAtualizar, toast }) {
               onChange={(e) => setF({ ...f, telefone: e.target.value })} />
           </Campo>
           <Btn variante="1" onClick={salvar} carregando={busy}>Salvar perfil</Btn>
+        </div>
+      </Cart>
+
+      <Cart>
+        <div className="pilha g4">
+          <div className="entre" style={{ alignItems: 'flex-start' }}>
+            <div>
+              <span className="olho">Termo de responsabilidade</span>
+              <p className="dica" style={{ marginTop: 4, maxWidth: 380 }}>
+                O aluno lê e aceita este texto ao assinar a anamnese. Uma cópia
+                fica congelada dentro do registro dele — se você editar depois,
+                o que ele assinou continua valendo.
+              </p>
+            </div>
+            {termoVersao && <Selo tom="aco">Versão {termoVersao}</Selo>}
+          </div>
+
+          {!termoVersao && (
+            <div className="aviso aviso-alerta fila g3">
+              <IcoAviso size={18} />
+              <span>
+                Você ainda não publicou o termo. Sem ele, os alunos assinam
+                apenas a declaração de veracidade. Revise o texto abaixo e salve.
+              </span>
+            </div>
+          )}
+
+          <textarea rows={14} value={termo}
+            onChange={(e) => setTermo(e.target.value)}
+            style={{ fontSize: 13, lineHeight: 1.6 }} />
+
+          <div className="fila g2" style={{ flexWrap: 'wrap' }}>
+            <Btn variante="1" disabled={!termoMudou}
+              onClick={() => setConfirmarTermo(true)}>
+              {termoVersao ? 'Publicar nova versão' : 'Publicar termo'}
+            </Btn>
+            {termoMudou && termoVersao && (
+              <Btn variante="3" onClick={() => setTermo(termoSalvo)}>
+                Descartar alterações
+              </Btn>
+            )}
+          </div>
+
+          <div className="dica">
+            Este texto é um modelo, não uma peça jurídica revisada. Se o
+            faturamento justificar, vale mostrar a um advogado.
+          </div>
         </div>
       </Cart>
 
@@ -3394,6 +4114,34 @@ function Perfil({ perfil, aoAtualizar, toast }) {
       <Btn variante="2" onClick={() => supabase.auth.signOut()}>
         <IcoSair size={16} /> Sair da conta
       </Btn>
+
+      <Modal aberto={confirmarTermo} aoFechar={() => setConfirmarTermo(false)}
+        titulo={termoVersao ? 'Publicar nova versão?' : 'Publicar termo?'}
+        rodape={<>
+          <Btn variante="2" onClick={() => setConfirmarTermo(false)}>Cancelar</Btn>
+          <Btn variante="1" onClick={salvarTermo} carregando={salvandoTermo}>
+            Publicar
+          </Btn>
+        </>}>
+        <p style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
+          {termoVersao ? (
+            <>
+              Isto cria a <strong>versão {termoVersao + 1}</strong>. Os alunos que
+              assinarem a partir de agora aceitam o novo texto. Quem já assinou
+              continua vinculado à versão que leu — nada muda para eles.
+              <br /><br />
+              Versões antigas não são apagadas. É isso que permite provar qual
+              texto estava valendo em cada data.
+            </>
+          ) : (
+            <>
+              A partir de agora, todo aluno que preencher a anamnese vai ler e
+              aceitar este termo antes de assinar. Uma cópia do texto fica
+              guardada dentro do registro dele.
+            </>
+          )}
+        </p>
+      </Modal>
     </div>
   );
 }
