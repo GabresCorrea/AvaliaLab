@@ -196,6 +196,118 @@ const classificarIMC = (imc) => {
   return { label: 'Obesidade', tom: 'alto' };
 };
 
+/* ───────────────────────────────────────────────────────────────
+   WHATSAPP — normalização de telefone
+
+   O campo `telefone` é texto livre: não existe máscara nem validação
+   no cadastro. O que está no banco é o que o profissional digitou —
+   "(35) 99999-8888", "35999998888", "+55 35 9999-8888", "99999-8888",
+   ou lixo.
+
+   Esta função NÃO chuta. Se o número não for reconhecível com
+   segurança, ela devolve null e o botão fica desabilitado com o
+   motivo. É deliberado: o link da anamnese dá acesso a um formulário
+   de saúde que será assinado. Mandar para o número errado é vazar
+   dado clínico para um desconhecido — e o profissional só descobre
+   quando o desconhecido preencher, ou nunca.
+
+   Errar para o lado de "não envia" custa um copiar-e-colar.
+   Errar para o lado de "envia errado" custa um incidente de privacidade.
+   ─────────────────────────────────────────────────────────────── */
+
+// DDD válido (11–99) + 8 ou 9 dígitos.
+// Celular com 9 dígitos começa com 9. Fixo com 8 começa com 2–5.
+const numeroBrasilValido = (d) => {
+  if (d.length !== 10 && d.length !== 11) return false;
+  const ddd = Number(d.slice(0, 2));
+  if (ddd < 11 || ddd > 99) return false;
+  const num = d.slice(2);
+  if (num.length === 9) return num[0] === '9';
+  if (num.length === 8) return /^[2-5]/.test(num[0]);
+  return false;
+};
+
+const normalizarWhats = (bruto) => {
+  if (!bruto) return null;
+
+  let d = String(bruto).replace(/\D/g, '');
+  if (!d) return null;
+
+  // Remove zeros de operadora/tronco na frente ("021...", "0 35...").
+  d = d.replace(/^0+/, '');
+
+  // Já veio com 55 na frente? Só aceita se o que sobra for um número
+  // brasileiro plausível — senão "5535..." poderia ser um DDD 55
+  // (Santa Maria/RS) com o resto truncado.
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) {
+    const resto = d.slice(2);
+    if (numeroBrasilValido(resto)) return d;
+    return null;
+  }
+
+  // Sem DDI: precisa de DDD + número.
+  if (numeroBrasilValido(d)) return '55' + d;
+
+  // 8 ou 9 dígitos = número sem DDD. NÃO dá para inferir o DDD:
+  // o app não guarda estado nem região do aluno, e assumir o DDD do
+  // profissional erra para todo aluno de outra cidade.
+  return null;
+};
+
+// Por que o número não serve — texto para o usuário, não para o log.
+const motivoWhatsInvalido = (bruto) => {
+  if (!bruto || !String(bruto).trim()) return 'Este aluno não tem telefone cadastrado.';
+  const d = String(bruto).replace(/\D/g, '').replace(/^0+/, '');
+  if (d.length === 8 || d.length === 9) {
+    return 'O telefone está sem o DDD. Edite o cadastro do aluno para incluir.';
+  }
+  return 'O telefone cadastrado não parece um número válido. Confira o cadastro.';
+};
+
+const mensagemAnamnese = ({ aluno, perfil, link, dias, adendo }) => {
+  const primeiro = (aluno.nome || '').trim().split(/\s+/)[0];
+  const prof = (perfil?.nome || '').trim();
+  const prazo = dias || '7 dias';
+
+  // Sem saudação genérica de robô e sem emoji: o app inteiro não usa
+  // emoji, e essa mensagem sai como se fosse escrita pelo profissional.
+  const linhas = adendo
+    ? [
+        `Oi, ${primeiro}! Aqui é ${prof}.`,
+        '',
+        'Preciso que você atualize um ponto da sua ficha de saúde. '
+        + 'É rápido, e o link já abre no seu celular:',
+        '',
+        link,
+        '',
+        `O link vale por ${prazo}. Qualquer dúvida, é só me chamar por aqui.`,
+      ]
+    : [
+        `Oi, ${primeiro}! Aqui é ${prof}.`,
+        '',
+        'Antes da nossa avaliação, preciso que você preencha a ficha de '
+        + 'saúde (anamnese). São algumas perguntas sobre histórico e '
+        + 'condições de treino, e no fim você assina pelo próprio celular:',
+        '',
+        link,
+        '',
+        `O link vale por ${prazo}. Qualquer dúvida, é só me chamar por aqui.`,
+      ];
+
+  return linhas.join('\n');
+};
+
+const abrirWhats = ({ telefone, texto }) => {
+  const num = normalizarWhats(telefone);
+  if (!num) return false;
+  // wa.me abre no app no celular e no WhatsApp Web no desktop.
+  window.open(
+    `https://wa.me/${num}?text=${encodeURIComponent(texto)}`,
+    '_blank', 'noopener,noreferrer'
+  );
+  return true;
+};
+
 // RCQ — risco cardiovascular (OMS)
 const classificarRCQ = (rcq, sexo) => {
   const limite = sexo === 'M' ? 0.90 : 0.85;
@@ -967,6 +1079,7 @@ const IcoGrafico = (p) => <Ico {...p} d={<><path d="M3 20h18"/><path d="m5 15 4-
 const IcoDoc     = (p) => <Ico {...p} d={<><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></>} />;
 const IcoLink    = (p) => <Ico {...p} d={<><path d="M10 13a4 4 0 0 0 5.7.4l3-3A4 4 0 0 0 13 4.7l-1.7 1.7"/><path d="M14 11a4 4 0 0 0-5.7-.4l-3 3A4 4 0 0 0 11 19.3l1.7-1.7"/></>} />;
 const IcoCopia   = (p) => <Ico {...p} d={<><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></>} />;
+const IcoWhats   = (p) => <Ico {...p} d={<><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.4 8.6 8.6 0 0 1-4-1L3 20l1.2-5.3a8.3 8.3 0 0 1-1.1-4.2A8.4 8.4 0 0 1 11.6 3 8.4 8.4 0 0 1 21 11.5z"/><path d="M9.2 8.4c.2-.4.4-.4.6-.4h.5c.2 0 .4 0 .6.5l.7 1.6c.1.3 0 .5-.1.7l-.4.5c-.1.2-.2.3 0 .6a6 6 0 0 0 2.7 2.3c.3.1.4 0 .6-.1l.5-.6c.2-.2.4-.2.6-.1l1.5.9c.3.2.4.3.4.5 0 .3-.2.9-.5 1.1a2 2 0 0 1-1.4.6c-1.4 0-3.4-1-5-2.7a7 7 0 0 1-1.9-3.4c0-.7.1-1.4.5-2z"/></>} />;
 const IcoUsuario = (p) => <Ico {...p} d={<><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></>} />;
 const IcoSair    = (p) => <Ico {...p} d={<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></>} />;
 const IcoLixo    = (p) => <Ico {...p} d={<><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></>} />;
@@ -3502,6 +3615,25 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
     }
   };
 
+  // Só habilita o botão se o número normalizar com segurança. Ver
+  // normalizarWhats: quando o telefone é ambíguo (sem DDD, por exemplo)
+  // a função devolve null de propósito, em vez de chutar.
+  const whatsOk = useMemo(
+    () => !!normalizarWhats(aluno.telefone),
+    [aluno.telefone]
+  );
+
+  const enviarWhats = (adendo) => {
+    const texto = mensagemAnamnese({
+      aluno, perfil, link,
+      dias: diasRestantes || '7 dias',
+      adendo,
+    });
+    if (!abrirWhats({ telefone: aluno.telefone, texto })) {
+      toast(motivoWhatsInvalido(aluno.telefone), 'erro');
+    }
+  };
+
   const remover = async () => {
     await supabase.from('al_avaliacoes').delete().eq('id', excluirAval);
     setExcluirAval(null);
@@ -3790,6 +3922,20 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
                     </Btn>
                   </div>
 
+                  <div className="fila g2" style={{ flexWrap: 'wrap' }}>
+                    <Btn variante="1" onClick={() => enviarWhats(false)}
+                      disabled={linkExpirado || !whatsOk}
+                      style={{ alignSelf: 'flex-start' }}>
+                      <IcoWhats size={16} /> Enviar pelo WhatsApp
+                    </Btn>
+                  </div>
+
+                  {!whatsOk && !linkExpirado && (
+                    <span className="dica">
+                      {motivoWhatsInvalido(aluno.telefone)}
+                    </span>
+                  )}
+
                   {linkExpirado && (
                     <div className="aviso aviso-alerta fila g3">
                       <IcoAviso size={18} />
@@ -3938,13 +4084,24 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
                   )}
 
                   {tokenAtual && !linkExpirado && (
-                    <div className="fila g2">
-                      <input readOnly value={link} className="mono"
-                        onClick={(e) => e.target.select()}
-                        style={{ fontSize: 12.5, color: 'var(--grafite)' }} />
-                      <Btn variante="2" onClick={copiar}>
-                        <IcoCopia size={16} /> Copiar
+                    <div className="pilha g2">
+                      <div className="fila g2">
+                        <input readOnly value={link} className="mono"
+                          onClick={(e) => e.target.select()}
+                          style={{ fontSize: 12.5, color: 'var(--grafite)' }} />
+                        <Btn variante="2" onClick={copiar}>
+                          <IcoCopia size={16} /> Copiar
+                        </Btn>
+                      </div>
+                      <Btn variante="1" tam="p" onClick={() => enviarWhats(true)}
+                        disabled={!whatsOk} style={{ alignSelf: 'flex-start' }}>
+                        <IcoWhats size={15} /> Enviar pelo WhatsApp
                       </Btn>
+                      {!whatsOk && (
+                        <span className="dica">
+                          {motivoWhatsInvalido(aluno.telefone)}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
