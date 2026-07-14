@@ -272,8 +272,26 @@ Declaro ter lido e compreendido integralmente o presente termo antes de assiná-
 
 const ROTULO_EVENTO = {
   anamnese_assinada:  'Anamnese assinada',
+  anamnese_adendo:    'Adendo de anamnese',
   avaliacao_criada:   'Avaliação registrada',
+  avaliacao_editada:  'Avaliação corrigida',
   avaliacao_excluida: 'Avaliação excluída',
+  // Linhas anteriores ao versionamento: houve edição, mas o conteúdo
+  // anterior não foi preservado. Registrar isso é mais honesto do que
+  // deixar a trilha parecer completa quando não é.
+  avaliacao_editada_legado: 'Avaliação corrigida (antes do versionamento)',
+};
+
+// Eventos que carregam assinatura do aluno. Marcados com bolinha cheia
+// na trilha: é o que distingue declaração assinada de registro interno.
+const EVENTO_FORTE = ['anamnese_assinada', 'anamnese_adendo'];
+
+// Nomes de campo legíveis para o diff de edição. Sem isso a trilha
+// mostraria 'obs_partes' e 'resultados' para o profissional.
+const ROTULO_CAMPO = {
+  data: 'data', peso: 'peso', altura: 'altura', protocolo: 'protocolo',
+  dobras: 'dobras cutâneas', perimetros: 'perímetros',
+  resultados: 'resultados', observacoes: 'observações',
 };
 
 const descreverEvento = (h) => {
@@ -295,6 +313,31 @@ const descreverEvento = (h) => {
         d.percentual ? `${d.percentual}% de gordura` : null,
         PROTOCOLOS[d.protocolo]?.nome,
       ].filter(Boolean).join(' · ');
+
+    case 'avaliacao_editada': {
+      const campos = Object.keys(d.campos || {})
+        .map((k) => ROTULO_CAMPO[k] || k);
+      return [
+        `Medição de ${dt(d.data)} — versão ${d.versao}`,
+        campos.length ? `Alterado: ${campos.join(', ')}` : null,
+        d.motivo ? `Motivo: ${d.motivo}` : null,
+      ].filter(Boolean).join('. ') + '.';
+    }
+
+    case 'avaliacao_editada_legado':
+      return `Medição de ${dt(d.data)} foi corrigida antes do versionamento. `
+        + 'O conteúdo anterior não foi preservado.';
+
+    case 'anamnese_adendo': {
+      const campos = (d.campos || []).length;
+      return [
+        d.origem === 'aluno'
+          ? `Informação atualizada e assinada por ${d.assinante || 'o aluno'}`
+          : 'Informação atualizada pelo profissional a partir de relato do aluno',
+        campos ? `${campos} ${campos === 1 ? 'campo' : 'campos'} alterado${campos === 1 ? '' : 's'}` : null,
+        d.motivo ? `Motivo: ${d.motivo}` : null,
+      ].filter(Boolean).join('. ') + '.';
+    }
 
     case 'avaliacao_excluida':
       return `Medição de ${dt(d.data)} foi removida do histórico.`;
@@ -1352,6 +1395,8 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
         dobras: edicao.dobras || {},
         perim: edicao.perimetros || {},
         ...separarObs(edicao),
+        // Sempre vazio ao abrir: o motivo é desta correção, não da anterior.
+        motivoEdicao: '',
       };
     }
     try {
@@ -1419,6 +1464,15 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
       toast('Preencha peso, altura e todas as dobras do protocolo', 'erro');
       return;
     }
+    // O motivo é obrigatório na correção. A fricção é proposital: quem
+    // corrige um dado clínico assinado precisa nomear o que mudou. É esse
+    // texto que sustenta o registro se a medição for contestada depois.
+    if (editando && f.motivoEdicao.trim().length < 3) {
+      toast('Descreva o motivo da correção antes de salvar', 'erro');
+      document.getElementById('motivo-edicao')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     setSalvando(true);
     const obs = [
       f.obsAntro && `Antropometria: ${f.obsAntro}`,
@@ -1439,22 +1493,38 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
       obs_partes: { antro: f.obsAntro, perim: f.obsPerim, geral: f.obsGeral },
     };
 
-    // Editar é update, não insert: não duplica a avaliação e não
-    // dispara al_trigger_avaliacao (que só escuta insert e delete).
-    // O carimbo editada_em fica; a auditoria, por decisão de projeto,
-    // não registra edição.
+    // Editar NÃO é update. Dado clínico assinado nunca é reescrito: a
+    // correção entra como versão nova e a anterior fica marcada como
+    // substituída. O trigger registra o diff na trilha.
+    //
+    // A aba de histórico promete ao aluno que o registro não pode ser
+    // alterado "nem por você". Um update silencioso quebrava exatamente
+    // essa promessa — era o único caminho no app que mexia em medida já
+    // gravada sem deixar rastro.
     const { error } = editando
-      ? await supabase.from('al_avaliacoes')
-          .update({ ...campos, editada_em: new Date().toISOString() })
-          .eq('id', edicao.id)
+      ? await supabase.rpc('al_editar_avaliacao', {
+          p_id: edicao.id,
+          p_campos: campos,
+          p_motivo: f.motivoEdicao.trim(),
+        })
       : await supabase.from('al_avaliacoes')
           .insert({ ...campos, aluno_id: aluno.id });
 
     setSalvando(false);
 
-    if (error) { toast('Não foi possível salvar. Tente de novo.', 'erro'); return; }
+    if (error) {
+      const m = error.message || '';
+      // Outra aba já corrigiu esta versão. Recarregar evita gravar em
+      // cima de uma correção que o profissional não viu.
+      if (m.includes('ja_substituida')) {
+        toast('Esta avaliação já foi corrigida em outro lugar. Recarregue.', 'erro');
+        return;
+      }
+      toast('Não foi possível salvar. Tente de novo.', 'erro');
+      return;
+    }
     if (!editando) sessionStorage.removeItem(chave);
-    toast(editando ? 'Avaliação atualizada' : 'Avaliação registrada', 'ok');
+    toast(editando ? 'Correção registrada' : 'Avaliação registrada', 'ok');
     aoSalvar();
   };
 
@@ -1774,6 +1844,31 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
           </Campo>
         </Cart>
       </section>
+
+      {/* ── Motivo da correção — só na edição ── */}
+      {editando && (
+        <section className="pilha g3">
+          <span className="olho">Motivo da correção</span>
+          <Cart>
+            <div className="pilha g3">
+              <div className="aviso aviso-info fila g3">
+                <IcoEscudo size={18} />
+                <span>
+                  A avaliação original não será apagada. Ela fica guardada como
+                  versão anterior, e esta correção entra no histórico com o que
+                  mudou e o motivo — visível para você e para o aluno.
+                </span>
+              </div>
+              <Campo dica="Ex.: dobra subescapular digitada errada na coleta."
+                id="motivo-edicao">
+                <textarea id="motivo-edicao" rows={2} value={f.motivoEdicao}
+                  placeholder="O que estava errado e por quê"
+                  onChange={(e) => set('motivoEdicao', e.target.value)} />
+              </Campo>
+            </div>
+          </Cart>
+        </section>
+      )}
 
       {suspeitas.length > 0 && (
         <div className="aviso aviso-alerta fila g3">
@@ -3314,19 +3409,53 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
   const [tokenAtual, setTokenAtual] = useState(aluno.token_anamnese);
   const [expiraEm, setExpiraEm] = useState(aluno.token_expira_em);
   const [historico, setHistorico] = useState([]);
+  const [adendos, setAdendos] = useState([]);
+  const [novoAdendo, setNovoAdendo] = useState(false);
+  const [adendoResp, setAdendoResp] = useState({});
+  const [adendoMotivo, setAdendoMotivo] = useState('');
+  const [salvandoAdendo, setSalvandoAdendo] = useState(false);
+
+  // A anamnese assinada é imutável. O que o app mostra é o estado efetivo:
+  // a base com os adendos aplicados em ordem. Nada é sobrescrito — a base
+  // original continua reconstruível a qualquer momento, e é ela que carrega
+  // a assinatura e a versão do termo aceito.
+  const anamneseEfetiva = useMemo(() => {
+    if (!anam) return null;
+    return adendos.reduce(
+      (acc, ad) => ({ ...acc, ...ad.respostas }),
+      anam.respostas || {}
+    );
+  }, [anam, adendos]);
+
+  // Campos que já foram alterados por algum adendo. Marcados na tela para
+  // que o profissional saiba que aquela resposta não é mais a da assinatura.
+  const camposComAdendo = useMemo(() => {
+    const s = new Set();
+    adendos.forEach((ad) => Object.keys(ad.respostas || {}).forEach((k) => s.add(k)));
+    return s;
+  }, [adendos]);
 
   const carregar = useCallback(async () => {
     setLoad(true);
-    const [{ data: a }, { data: an }, { data: h }] = await Promise.all([
+    const [{ data: a }, { data: an }, { data: h }, { data: ad }] = await Promise.all([
+      // Só as vigentes. Versões substituídas continuam no banco — é o que
+      // dá lastro à trilha — mas não entram em gráfico, relatório nem
+      // comparativo. Para o resto do app, existe uma avaliação por data.
       supabase.from('al_avaliacoes').select('*')
-        .eq('aluno_id', aluno.id).order('data', { ascending: false }),
+        .eq('aluno_id', aluno.id)
+        .is('substituida_por', null)
+        .order('data', { ascending: false }),
       supabase.from('al_anamneses').select('*')
         .eq('aluno_id', aluno.id).maybeSingle(),
       supabase.rpc('al_historico', { p_aluno: aluno.id }),
+      supabase.from('al_anamnese_adendos').select('*')
+        .eq('aluno_id', aluno.id)
+        .order('criado_em', { ascending: true }),
     ]);
     setAvals(a || []);
     setAnam(an);
     setHistorico(h || []);
+    setAdendos(ad || []);
     setLoad(false);
   }, [aluno.id]);
 
@@ -3368,9 +3497,42 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
     toast('Avaliação removida', 'ok');
   };
 
+  // O relatório recebe a base assinada E os adendos. Passar só `anam`
+  // faria o PDF mostrar a resposta da assinatura para um campo que já foi
+  // corrigido — o mesmo buraco do PAR-Q, só que impresso e entregue.
   const relatorio = () => {
     if (!avals.length) return toast('Nenhuma avaliação para exportar', 'erro');
-    gerarRelatorio({ aluno, perfil, avaliacoes: avals, anamnese: anam });
+    gerarRelatorio({
+      aluno, perfil, avaliacoes: avals,
+      anamnese: anam, adendos, anamneseEfetiva,
+    });
+  };
+
+  const salvarAdendo = async () => {
+    const campos = Object.keys(adendoResp);
+    if (!campos.length) {
+      toast('Selecione ao menos uma resposta para atualizar', 'erro');
+      return;
+    }
+    if (adendoMotivo.trim().length < 3) {
+      toast('Descreva o que o aluno relatou', 'erro');
+      return;
+    }
+    setSalvandoAdendo(true);
+    const { error } = await supabase.from('al_anamnese_adendos').insert({
+      anamnese_id: anam.id,
+      aluno_id: aluno.id,
+      origem: 'profissional',
+      respostas: adendoResp,
+      motivo: adendoMotivo.trim(),
+    });
+    setSalvandoAdendo(false);
+    if (error) { toast('Não foi possível registrar o adendo', 'erro'); return; }
+    setNovoAdendo(false);
+    setAdendoResp({});
+    setAdendoMotivo('');
+    carregar();
+    toast('Adendo registrado', 'ok');
   };
 
   if (nova) return (
@@ -3676,28 +3838,122 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
                 </div>
               )}
 
+              {/* ── Adendos ── */}
+              <Cart>
+                <div className="pilha g4">
+                  <div className="entre">
+                    <div>
+                      <span className="olho">Adendos</span>
+                      <p className="dica" style={{ marginTop: 4 }}>
+                        A anamnese assinada não pode ser alterada. Informação
+                        nova entra como adendo, sem apagar o que foi assinado.
+                      </p>
+                    </div>
+                    {adendos.length > 0 && (
+                      <Selo tom="info">{adendos.length}</Selo>
+                    )}
+                  </div>
+
+                  {adendos.length > 0 && (
+                    <div className="trilha">
+                      {adendos.map((ad) => {
+                        const doAluno = ad.origem === 'aluno';
+                        return (
+                          <div key={ad.id}
+                            className={`trilha-i ${doAluno ? 'forte' : ''}`}>
+                            <div className="trilha-e">
+                              {doAluno
+                                ? `Assinado por ${ad.nome_assina}`
+                                : 'Registrado pelo profissional'}
+                            </div>
+                            <div className="trilha-d">
+                              {Object.keys(ad.respostas || {}).length}
+                              {Object.keys(ad.respostas || {}).length === 1
+                                ? ' campo atualizado' : ' campos atualizados'}
+                              {ad.motivo ? `. ${ad.motivo}` : '.'}
+                              {!doAluno && ' Relato do aluno, sem assinatura.'}
+                            </div>
+                            <div className="trilha-q">
+                              {new Date(ad.criado_em).toLocaleString('pt-BR', {
+                                day: '2-digit', month: '2-digit', year: 'numeric',
+                                hour: '2-digit', minute: '2-digit',
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="aviso aviso-info fila g3">
+                    <IcoEscudo size={18} />
+                    <span>
+                      Adendo assinado pelo aluno tem o mesmo peso da anamnese
+                      original. Adendo registrado por você vale como relato
+                      anotado em consulta — fica claro no prontuário e no
+                      relatório qual é qual.
+                    </span>
+                  </div>
+
+                  <div className="fila g2" style={{ flexWrap: 'wrap' }}>
+                    <Btn variante="2" tam="p"
+                      carregando={renovando} onClick={renovarLink}>
+                      <IcoCopia size={15} /> Gerar link de adendo
+                    </Btn>
+                    <Btn variante="3" tam="p" onClick={() => setNovoAdendo(true)}>
+                      Registrar relato
+                    </Btn>
+                  </div>
+
+                  {tokenAtual && !linkExpirado && (
+                    <div className="fila g2">
+                      <input readOnly value={link} className="mono"
+                        onClick={(e) => e.target.select()}
+                        style={{ fontSize: 12.5, color: 'var(--grafite)' }} />
+                      <Btn variante="2" onClick={copiar}>
+                        <IcoCopia size={16} /> Copiar
+                      </Btn>
+                    </div>
+                  )}
+                </div>
+              </Cart>
+
+              {/* As respostas exibidas são o estado EFETIVO: base + adendos.
+                  Isso importa para o PAR-Q. Se o aluno relatou dor no peito
+                  num adendo, o alerta tem que acender aqui — ler da base
+                  assinada mostraria "Não" para uma contraindicação real. */}
               {ANAMNESE.map((sec) => {
                 const alertas = sec.itens.filter(
-                  (i) => i.k.startsWith('parq') && anam.respostas[i.k] === 'Sim'
+                  (i) => i.k.startsWith('parq') && anamneseEfetiva[i.k] === 'Sim'
                 );
+                const alterados = sec.itens.filter((i) => camposComAdendo.has(i.k)).length;
                 return (
                   <Cart key={sec.secao}>
                     <div className="pilha g4">
                       <div className="entre">
                         <span className="olho">{sec.secao}</span>
-                        {alertas.length > 0 && (
-                          <Selo tom="medio">
-                            <IcoAviso size={12} />
-                            {alertas.length} a observar
-                          </Selo>
-                        )}
+                        <div className="fila g2">
+                          {alterados > 0 && (
+                            <Selo tom="info">
+                              {alterados} atualizado{alterados === 1 ? '' : 's'}
+                            </Selo>
+                          )}
+                          {alertas.length > 0 && (
+                            <Selo tom="medio">
+                              <IcoAviso size={12} />
+                              {alertas.length} a observar
+                            </Selo>
+                          )}
+                        </div>
                       </div>
 
                       <div className="pilha g4">
                         {sec.itens.map((it) => {
-                          const v = anam.respostas[it.k];
+                          const v = anamneseEfetiva[it.k];
                           if (!v || (Array.isArray(v) && !v.length)) return null;
                           const alerta = it.k.startsWith('parq') && v === 'Sim';
+                          const mudou = camposComAdendo.has(it.k);
+                          const orig = anam.respostas?.[it.k];
                           return (
                             <div key={it.k}>
                               <div className="dica">{it.q}</div>
@@ -3707,6 +3963,14 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
                               }}>
                                 {Array.isArray(v) ? v.join(', ') : v}
                               </div>
+                              {mudou && (
+                                <div className="dica" style={{ marginTop: 3 }}>
+                                  Atualizado por adendo.
+                                  {orig && ` Na assinatura: ${
+                                    Array.isArray(orig) ? orig.join(', ') : orig
+                                  }.`}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -3742,7 +4006,7 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
             <Cart>
               <div className="trilha">
                 {historico.map((h, i) => {
-                  const forte = h.evento === 'anamnese_assinada';
+                  const forte = EVENTO_FORTE.includes(h.evento);
                   return (
                     <div key={i} className={`trilha-i ${forte ? 'forte' : ''}`}>
                       <div className="trilha-e">{ROTULO_EVENTO[h.evento] || h.evento}</div>
@@ -3780,6 +4044,103 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
           será recalculado sem ela. Não dá para desfazer.
         </p>
       </Modal>
+
+      {/* ── Adendo registrado pelo profissional ──
+          Sem assinatura, por definição: quem está digitando é você, não o
+          aluno. Por isso o registro é explicitamente rotulado como relato
+          em todo lugar que aparece. Fingir que isso equivale a uma
+          declaração assinada seria justamente o que tira o valor do
+          prontuário. Para informação sensível, o caminho é o link. */}
+      <Modal aberto={novoAdendo} aoFechar={() => setNovoAdendo(false)}
+        titulo="Registrar relato do aluno"
+        rodape={<>
+          <Btn variante="2" onClick={() => setNovoAdendo(false)}>Cancelar</Btn>
+          <Btn variante="1" onClick={salvarAdendo} carregando={salvandoAdendo}>
+            Registrar adendo
+          </Btn>
+        </>}>
+        <div className="pilha g4">
+          <div className="aviso aviso-alerta fila g3">
+            <IcoAviso size={18} />
+            <span>
+              Este adendo <strong>não é assinado pelo aluno</strong>. Vale como
+              anotação sua do que ele relatou. Se a informação for sensível —
+              condição cardíaca, gestação, lesão nova — prefira mandar o link
+              para que ele mesmo declare e assine.
+            </span>
+          </div>
+
+          <Campo rot="O que o aluno relatou" id="adendo-motivo"
+            dica="Fica registrado no histórico junto com a data.">
+            <textarea id="adendo-motivo" rows={2} value={adendoMotivo}
+              placeholder="Ex.: relatou dor lombar nova durante a sessão de hoje"
+              onChange={(e) => setAdendoMotivo(e.target.value)} />
+          </Campo>
+
+          <div className="pilha g3">
+            <span className="olho">Respostas a atualizar</span>
+            <p className="dica">
+              Só o que você mexer entra no adendo. O resto continua valendo
+              como foi assinado.
+            </p>
+
+            {ANAMNESE.map((sec) => (
+              <div key={sec.secao} className="pilha g3">
+                <span className="rot">{sec.secao}</span>
+                {sec.itens.map((it) => {
+                  const atual = adendoResp[it.k] ?? anamneseEfetiva?.[it.k] ?? '';
+                  const mexeu = it.k in adendoResp;
+                  const set = (v) => setAdendoResp((p) => ({ ...p, [it.k]: v }));
+                  const limpar = () => setAdendoResp((p) => {
+                    const n = { ...p }; delete n[it.k]; return n;
+                  });
+                  return (
+                    <div key={it.k} className="pilha g2">
+                      <div className="entre">
+                        <span className="dica" style={{ flex: 1 }}>{it.q}</span>
+                        {mexeu && (
+                          <Btn variante="3" tam="p" onClick={limpar}>Desfazer</Btn>
+                        )}
+                      </div>
+
+                      {it.t === 'sn' && (
+                        <div className="fila g2">
+                          {['Sim', 'Não'].map((op) => (
+                            <Btn key={op} tam="p"
+                              variante={atual === op ? '1' : '2'}
+                              onClick={() => set(op)}>{op}</Btn>
+                          ))}
+                        </div>
+                      )}
+
+                      {it.t === 'texto' && (
+                        <textarea rows={2} value={atual}
+                          onChange={(e) => set(e.target.value)} />
+                      )}
+
+                      {it.t === 'multi' && (
+                        <div className="fila g2" style={{ flexWrap: 'wrap' }}>
+                          {(it.opcoes || []).map((op) => {
+                            const arr = Array.isArray(atual) ? atual : [];
+                            const on = arr.includes(op);
+                            return (
+                              <Btn key={op} tam="p"
+                                variante={on ? '1' : '2'}
+                                onClick={() => set(on
+                                  ? arr.filter((x) => x !== op)
+                                  : [...arr, op])}>{op}</Btn>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -3809,7 +4170,11 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
     if (lista.length) {
       const ids = lista.map((a) => a.id);
       const [{ data: avs }, { data: ans }] = await Promise.all([
-        supabase.from('al_avaliacoes').select('aluno_id, data').in('aluno_id', ids),
+        // Vigentes apenas: senão a contagem por aluno somaria as versões
+        // substituídas e a "última avaliação" poderia apontar para uma
+        // versão já corrigida.
+        supabase.from('al_avaliacoes').select('aluno_id, data')
+          .in('aluno_id', ids).is('substituida_por', null),
         supabase.from('al_anamneses').select('aluno_id').in('aluno_id', ids),
       ]);
       const ultimaDe = {};
