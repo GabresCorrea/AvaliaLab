@@ -308,6 +308,148 @@ const abrirWhats = ({ telefone, texto }) => {
   return true;
 };
 
+/* ───────────────────────────────────────────────────────────────
+   REGISTRO FOTOGRÁFICO
+
+   Bucket privado. Leitura só por URL assinada de validade curta —
+   bucket público seria URL que vaza, e imagem de corpo na internet
+   não volta atrás.
+
+   O caminho é {profile_id}/{aluno_id}/{uuid}.jpg, sem avaliacao_id:
+   o id da avaliação só existe depois do insert, e gravar `fotos` num
+   UPDATE pós-insert reabriria o caminho que a 005 fechou — mexer em
+   medida já gravada. Com uuid gerado aqui, o upload acontece antes e
+   `fotos` entra no mesmo insert. Nada é reescrito.
+   ─────────────────────────────────────────────────────────────── */
+
+const BUCKET_FOTOS = 'al-fotos';
+const POSES = [
+  { k: 'frente', l: 'Frente' },
+  { k: 'perfil', l: 'Perfil' },
+  { k: 'costas', l: 'Costas' },
+];
+
+const FOTO_LADO_MAX = 1200;
+const FOTO_QUALIDADE = 0.8;
+const URL_VALIDADE = 300;   // 5 min: o tempo de olhar a tela, não de circular
+
+/* Compressão no cliente, obrigatória. Foto de celular vem com 4–8 MB; três
+   por avaliação, várias avaliações por aluno, e o free tier do Storage
+   evapora em semanas. Isto derruba para ~200–400 KB. */
+const comprimirFoto = (file) => new Promise((ok, falha) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const { width: w, height: h } = img;
+    const escala = Math.min(1, FOTO_LADO_MAX / Math.max(w, h));
+
+    const cv = document.createElement('canvas');
+    cv.width  = Math.round(w * escala);
+    cv.height = Math.round(h * escala);
+
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+
+    cv.toBlob(
+      (b) => b ? ok(b) : falha(new Error('canvas_vazio')),
+      'image/jpeg',
+      FOTO_QUALIDADE
+    );
+  };
+
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    falha(new Error('imagem_invalida'));
+  };
+
+  img.src = url;
+});
+
+const caminhoFoto = (profileId, alunoId) =>
+  `${profileId}/${alunoId}/${crypto.randomUUID()}.jpg`;
+
+/* Sobe as fotos e devolve o jsonb pronto para o insert. Se qualquer upload
+   falhar, os que já subiram são apagados: meia avaliação com meia foto é
+   pior do que avaliação nenhuma, porque o profissional não vê o buraco. */
+const subirFotos = async ({ blobs, profileId, alunoId }) => {
+  const subidos = [];
+  const fotos = {};
+
+  try {
+    for (const { pose, blob } of blobs) {
+      const path = caminhoFoto(profileId, alunoId);
+      const { error } = await supabase.storage
+        .from(BUCKET_FOTOS)
+        .upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+
+      if (error) throw error;
+      subidos.push(path);
+      fotos[pose] = path;
+    }
+    return fotos;
+  } catch (e) {
+    if (subidos.length) {
+      await supabase.storage.from(BUCKET_FOTOS).remove(subidos);
+    }
+    throw e;
+  }
+};
+
+/* Assinatura direto no cliente. Não há RPC para isto: assinar URL é operação
+   da API de Storage, não do Postgres. A policy do bucket já garante que só
+   o dono assina o que está sob o próprio uid — o controle está na RLS, que
+   é onde ele deve estar. */
+const assinarFotos = async (fotos, segundos = URL_VALIDADE) => {
+  if (!fotos) return {};
+  const pares = POSES
+    .map((p) => [p.k, fotos[p.k]])
+    .filter(([, path]) => !!path);
+
+  if (!pares.length) return {};
+
+  const { data, error } = await supabase.storage
+    .from(BUCKET_FOTOS)
+    .createSignedUrls(pares.map(([, path]) => path), segundos);
+
+  if (error || !data) return {};
+
+  const out = {};
+  data.forEach((d, i) => {
+    if (d.signedUrl && !d.error) out[pares[i][0]] = d.signedUrl;
+  });
+  return out;
+};
+
+/* Para o PDF: a imagem precisa estar EMBUTIDA, não apontada.
+   O relatório é window.print() num timeout — URL assinada é requisição de
+   rede, e o diálogo de impressão dispara antes de a imagem decodificar. Daria
+   caixa em branco em algumas máquinas e foto em outras, que é o pior modo de
+   falha porque funciona na do desenvolvedor. Além disso, o PDF vai por
+   WhatsApp e sobrevive à expiração da URL. */
+const fotosEmBase64 = async (fotos) => {
+  const urls = await assinarFotos(fotos, 600);
+  const out = {};
+
+  await Promise.all(Object.entries(urls).map(async ([pose, url]) => {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const blob = await r.blob();
+      out[pose] = await new Promise((ok) => {
+        const fr = new FileReader();
+        fr.onload = () => ok(fr.result);
+        fr.onerror = () => ok(null);
+        fr.readAsDataURL(blob);
+      });
+    } catch { /* foto que não carrega some do PDF, e o resto sai */ }
+  }));
+
+  return Object.fromEntries(Object.entries(out).filter(([, v]) => !!v));
+};
+
 // RCQ — risco cardiovascular (OMS)
 const classificarRCQ = (rcq, sexo) => {
   const limite = sexo === 'M' ? 0.90 : 0.85;
@@ -378,7 +520,32 @@ Declaro estar ciente de que:
 
 7. Este documento não substitui avaliação médica. O acompanhamento profissional em educação física não constitui diagnóstico, prescrição ou tratamento médico.
 
+8. Registro fotográfico. Autorizo o registro de imagens do meu corpo (frente, perfil e costas) durante as avaliações físicas, com a finalidade exclusiva de acompanhamento da minha evolução corporal.
+
+Estou ciente de que:
+
+a) As imagens ficam armazenadas em ambiente restrito, acessível somente ao profissional responsável por mim;
+
+b) As imagens não serão publicadas, divulgadas, compartilhadas com terceiros ou utilizadas para qualquer finalidade comercial, publicitária ou de divulgação, em nenhuma circunstância, salvo mediante autorização específica, escrita e separada deste termo;
+
+c) Posso solicitar a exclusão das imagens a qualquer momento, sem necessidade de justificativa, e sem que isso afete a continuidade do meu acompanhamento;
+
+d) Esta autorização é facultativa: a recusa não impede a realização da avaliação nem o acesso a qualquer serviço.
+
 Declaro ter lido e compreendido integralmente o presente termo antes de assiná-lo.`;
+
+/* ── Gate do registro fotográfico ──
+   A anamnese congela `termo_texto` no ato da assinatura. Quem assinou uma
+   versão sem a cláusula de imagem não autorizou foto nenhuma — e autorização
+   que ninguém deu não se presume a partir de um upgrade de versão do termo.
+
+   Por isso o gate lê o texto congelado, não o número da versão: o profissional
+   edita o termo livremente, e um número maior não diz nada sobre o conteúdo.
+   O que decide é a cláusula estar lá, no papel que aquele aluno assinou. */
+const MARCA_FOTO = 'Registro fotográfico';
+
+const permiteFoto = (anamnese) =>
+  !!anamnese?.termo_texto && anamnese.termo_texto.includes(MARCA_FOTO);
 
 /* ── Trilha de auditoria ── */
 
@@ -1213,6 +1380,98 @@ const Modal = ({ aberto, aoFechar, titulo, children, rodape }) => {
   );
 };
 
+/* ── Três slots de foto ──
+   Todos opcionais: o profissional sobe uma, duas, nenhuma. A cláusula (d)
+   do termo diz que a recusa não impede a avaliação, e a tela precisa dizer
+   a mesma coisa — se o slot parecesse obrigatório, o consentimento deixaria
+   de ser livre na prática, por mais que o papel dissesse o contrário.
+
+   Comprime no momento da escolha, não no salvar: o preview já é o arquivo
+   que vai subir, então o que o profissional vê é o que fica. */
+const FotosAvaliacao = ({ fotos, aoMudar, toast }) => {
+  const refs = useRef({});
+
+  const escolher = async (pose, file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('Selecione uma imagem', 'erro');
+      return;
+    }
+    try {
+      const blob = await comprimirFoto(file);
+      const anterior = fotos[pose];
+      if (anterior?.preview) URL.revokeObjectURL(anterior.preview);
+      aoMudar({ ...fotos, [pose]: { blob, preview: URL.createObjectURL(blob) } });
+    } catch {
+      toast('Não foi possível ler esta imagem. Tente outra.', 'erro');
+    }
+  };
+
+  const remover = (pose) => {
+    const atual = fotos[pose];
+    if (atual?.preview) URL.revokeObjectURL(atual.preview);
+    const { [pose]: _, ...resto } = fotos;
+    aoMudar(resto);
+    if (refs.current[pose]) refs.current[pose].value = '';
+  };
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))',
+      gap: 'var(--e3)',
+    }}>
+      {POSES.map(({ k, l }) => {
+        const f = fotos[k];
+        return (
+          <div key={k} className="pilha g2">
+            <span className="dica" style={{ fontWeight: 500, color: 'var(--grafite)' }}>
+              {l}
+            </span>
+
+            <input
+              ref={(el) => { refs.current[k] = el; }}
+              type="file" accept="image/*" capture="environment"
+              style={{ display: 'none' }}
+              onChange={(e) => escolher(k, e.target.files?.[0])} />
+
+            {f ? (
+              <div style={{ position: 'relative' }}>
+                <img src={f.preview} alt={`Foto ${l.toLowerCase()}`}
+                  style={{
+                    width: '100%', aspectRatio: '3 / 4', objectFit: 'cover',
+                    borderRadius: 'var(--r2)', display: 'block',
+                    border: '1px solid var(--linha)',
+                  }} />
+                <div className="fila g2" style={{ marginTop: 'var(--e2)' }}>
+                  <Btn variante="2" tam="p" type="button"
+                    onClick={() => refs.current[k]?.click()}>Trocar</Btn>
+                  <Btn variante="x" tam="p" type="button"
+                    onClick={() => remover(k)}>Remover</Btn>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => refs.current[k]?.click()}
+                style={{
+                  width: '100%', aspectRatio: '3 / 4',
+                  border: '1.5px dashed var(--linha)',
+                  borderRadius: 'var(--r2)', background: 'transparent',
+                  color: 'var(--tenue)', cursor: 'pointer',
+                  display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center',
+                  gap: 6, transition: 'border-color var(--t)',
+                }}>
+                <IcoImagem size={22} />
+                <span style={{ fontSize: 12.5 }}>Adicionar</span>
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 /* Delta com seta e cor — usado no app e no relatório */
 const Delta = ({ atual, anterior, un = '', menorMelhor = null, mostrarZero = true }) => {
   if (anterior == null || atual == null) return null;
@@ -1503,7 +1762,7 @@ const separarObs = (aval) => {
   return { ...r, obsGeral: r.obsGeral.join('\n').trim() };
 };
 
-function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast }) {
+function Avaliacao({ aluno, ultima, perfil, anamnese, edicao, aoSalvar, aoCancelar, toast }) {
   const editando = !!edicao;
   // Rascunho é só para avaliação nova. Numa edição, o rascunho de
   // outra avaliação não pode vazar por cima dos dados reais.
@@ -1546,6 +1805,20 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
   const [salvando, setSalvando] = useState(false);
   const [rascunhoOk, setRascunhoOk] = useState(false);
   const [confirmarSaida, setConfirmarSaida] = useState(false);
+
+  /* Fotos ficam FORA de `f`. O rascunho vai para o sessionStorage, e Blob não
+     sobrevive ao JSON.stringify — entraria como {} e o profissional acharia
+     que a foto estava salva quando não estava. Perder a foto ao recarregar é
+     ruim; achar que ela existe e ela não existir é pior. */
+  const [fotos, setFotos] = useState({});
+
+  const podeFoto = permiteFoto(anamnese);
+
+  // Preview é objectURL: sem revoke, cada troca de foto vaza um blob na
+  // memória da aba, e o profissional faz isso a tarde inteira.
+  useEffect(() => () => {
+    Object.values(fotos).forEach((x) => x?.preview && URL.revokeObjectURL(x.preview));
+  }, [fotos]);
 
   const idade = idadeDe(aluno.nascimento);
   const ativas = dobrasDoProtocolo(f.protocolo, aluno.sexo);
@@ -1617,6 +1890,31 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
       // as três partes cruas, para reabrir o formulário sem parsing
       obs_partes: { antro: f.obsAntro, perim: f.obsPerim, geral: f.obsGeral },
     };
+
+    /* As fotos sobem ANTES do insert, e `fotos` entra no mesmo insert. Não é
+       detalhe de implementação: um UPDATE pós-insert para gravar o caminho
+       seria escrita em avaliação já gravada — exatamente o que a 005 fechou.
+       O uuid no caminho é gerado aqui, então não precisamos do id da linha.
+
+       Se o upload falhar, nada é gravado: o subirFotos já limpou o que subiu,
+       e a avaliação não entra pela metade. */
+    const novas = POSES
+      .map(({ k }) => fotos[k] && { pose: k, blob: fotos[k].blob })
+      .filter(Boolean);
+
+    if (novas.length && !editando) {
+      try {
+        campos.fotos = await subirFotos({
+          blobs: novas,
+          profileId: perfil.id,
+          alunoId: aluno.id,
+        });
+      } catch {
+        setSalvando(false);
+        toast('Não foi possível enviar as fotos. A avaliação não foi salva.', 'erro');
+        return;
+      }
+    }
 
     // Editar NÃO é update. Dado clínico assinado nunca é reescrito: a
     // correção entra como versão nova e a anterior fica marcada como
@@ -1958,6 +2256,53 @@ function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast 
         </Cart>
       </section>
 
+      {/* ── Registro fotográfico ──
+          Só na avaliação nova. Numa correção, o campo `fotos` está fora do
+          escopo: corrigir uma dobra digitada errada não é ocasião para trocar
+          a imagem do corpo de alguém, e o al_editar_avaliacao versiona medida,
+          não foto. Trocar foto é remover e subir de novo, na ficha. */}
+      {!editando && (
+        <section className="pilha g3">
+          <span className="olho">Registro fotográfico</span>
+          <Cart>
+            {podeFoto ? (
+              <div className="pilha g4">
+                <div className="aviso aviso-info fila g3">
+                  <IcoEscudo size={18} />
+                  <span>
+                    Opcional. As três, uma só ou nenhuma — a avaliação salva do
+                    mesmo jeito. As imagens ficam em área restrita, visíveis só
+                    para você, e o aluno pode pedir a exclusão a qualquer momento.
+                  </span>
+                </div>
+                <FotosAvaliacao fotos={fotos} aoMudar={setFotos} toast={toast} />
+                <span className="dica">
+                  Peça a mesma pose e a mesma distância de sempre. O comparativo
+                  só convence quando as duas fotos são comparáveis.
+                </span>
+              </div>
+            ) : (
+              /* O gate. Quem assinou um termo sem a cláusula de imagem não
+                 autorizou foto nenhuma, e autorização não se presume a partir
+                 de uma versão nova do termo que ele nunca leu. O caminho de
+                 saída existe e é o adendo — que já traz o termo atualizado
+                 para ele assinar de novo. */
+              <div className="aviso aviso-alerta fila g3">
+                <IcoAviso size={18} />
+                <span>
+                  {anamnese
+                    ? <>Este aluno assinou um termo que não previa registro
+                        fotográfico. Envie um adendo de anamnese com o termo
+                        atualizado — feito isso, o envio de fotos aparece aqui.</>
+                    : <>Este aluno ainda não assinou a anamnese. O registro
+                        fotográfico depende do termo assinado.</>}
+                </span>
+              </div>
+            )}
+          </Cart>
+        </section>
+      )}
+
       {/* ── Recomendações ── */}
       <section className="pilha g3">
         <span className="olho">Recomendações ao aluno</span>
@@ -2061,7 +2406,7 @@ function completarResultados(aval) {
   return r;
 }
 
-function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
+function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese, fotosIni, fotosFim }) {
   const ultima   = avaliacoes[0];
   const anterior = avaliacoes[1] || null;
   const primeira = avaliacoes[avaliacoes.length - 1];
@@ -2333,6 +2678,43 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
           }).join('')}
         </tbody>
       </table>
+    </section>` : '';
+
+  /* ── Comparativo em imagem ──
+     O número move pouco e a foto move muito: dois quilos a menos é uma linha
+     na tabela, e é a mesma pessoa de pé, meses depois, que faz alguém
+     continuar. Por isso as fotos vêm logo depois da tabela, e não num anexo.
+
+     Só entra a pose que existe nas DUAS pontas. Frente de janeiro ao lado de
+     costas de julho não é comparativo, é confusão — e um comparativo que
+     compara coisas diferentes mente com aparência de prova. */
+  const posesPareadas = temHist
+    ? POSES.filter(({ k }) => fotosIni?.[k] && fotosFim?.[k])
+    : [];
+
+  const comparativoFotos = posesPareadas.length ? `
+    <section class="bloco quebra">
+      <h2>Comparativo em imagem</h2>
+      <div class="fotos-g">
+        ${posesPareadas.map(({ k, l }) => `
+          <div class="fotos-par">
+            <div class="fotos-rot">${l}</div>
+            <div class="fotos-d">
+              <figure>
+                <img src="${fotosIni[k]}" alt="${l}, primeira avaliação" />
+                <figcaption>${data(primeira.data)}</figcaption>
+              </figure>
+              <figure>
+                <img src="${fotosFim[k]}" alt="${l}, avaliação atual" />
+                <figcaption class="forte">${data(ultima.data)}</figcaption>
+              </figure>
+            </div>
+          </div>`).join('')}
+      </div>
+      <p class="fotos-nt">
+        Imagens registradas com autorização do avaliado, para acompanhamento
+        da evolução corporal. Uso restrito.
+      </p>
     </section>` : '';
 
   /* ── Perimetria ── */
@@ -2619,6 +3001,24 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
   .bloco{margin-bottom:9mm}
   .bloco:last-child{margin-bottom:0}
   .quebra{page-break-inside:avoid}
+
+  /* ── Comparativo em imagem ──
+     As duas fotos do par têm a MESMA altura fixa e o mesmo object-fit. Sem
+     isso, uma foto mais alta que a outra faz o corpo parecer maior ou menor
+     por causa do enquadramento, não por causa do treino — o comparativo
+     mentiria, e mentiria a favor do profissional, que é pior ainda. */
+  .fotos-g{display:flex;flex-direction:column;gap:6mm}
+  .fotos-par{page-break-inside:avoid}
+  .fotos-rot{font-size:8.5pt;font-weight:600;color:#5A5750;
+             text-transform:uppercase;letter-spacing:.05em;margin-bottom:2mm}
+  .fotos-d{display:grid;grid-template-columns:1fr 1fr;gap:4mm}
+  .fotos-d figure{margin:0}
+  .fotos-d img{width:100%;height:62mm;object-fit:cover;
+               border-radius:2mm;border:.3mm solid #E3DFD7;display:block}
+  .fotos-d figcaption{font-size:8pt;color:#8A857C;margin-top:1.5mm;
+                      text-align:center;font-variant-numeric:tabular-nums}
+  .fotos-d figcaption.forte{color:#2F2C28;font-weight:600}
+  .fotos-nt{font-size:7.5pt;color:#8A857C;margin-top:4mm;line-height:1.5}
 
   h2{
     font-family:'Instrument Sans',sans-serif;
@@ -2998,6 +3398,7 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
   ${tabelaDobras}
   ${graficoEvolucao}
   ${tabelaEvolucao}
+  ${comparativoFotos}
 
   <div class="rod">
     <div>
@@ -3035,7 +3436,20 @@ function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese }) {
 ${anexoAssinatura}
 
 <script>
-  window.onload = () => { setTimeout(() => window.print(), 800); };
+  /* Espera as imagens decodificarem antes de imprimir. O timeout sozinho era
+     uma aposta: com foto embutida em base64, um A4 pode carregar seis imagens,
+     e imprimir no meio da decodificação gera caixa vazia. O teto de 5s existe
+     para que uma imagem corrompida não trave a impressão para sempre. */
+  window.onload = () => {
+    const imgs = [...document.images];
+    const prontas = Promise.all(
+      imgs.map((i) => i.complete
+        ? Promise.resolve()
+        : new Promise((ok) => { i.onload = ok; i.onerror = ok; }))
+    );
+    const teto = new Promise((ok) => setTimeout(ok, 5000));
+    Promise.race([prontas, teto]).then(() => setTimeout(() => window.print(), 300));
+  };
 <\/script>
 </body></html>`;
 
@@ -3530,6 +3944,12 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
   const [load, setLoad]     = useState(true);
   const [aberta, setAberta] = useState(null);
   const [excluirAval, setExcluirAval] = useState(null);
+  const [excluirFoto, setExcluirFoto] = useState(null);
+  const [gerando, setGerando] = useState(false);
+  // URLs assinadas por avaliação. Assinadas sob demanda, ao abrir o card:
+  // assinar as de todas as avaliações no carregamento seria gerar dezenas de
+  // URLs vivas para olhar uma.
+  const [urls, setUrls] = useState({});
   const [renovando, setRenovando] = useState(false);
   const [tokenAtual, setTokenAtual] = useState(aluno.token_anamnese);
   const [expiraEm, setExpiraEm] = useState(aluno.token_expira_em);
@@ -3586,6 +4006,22 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
 
   useEffect(() => { carregar(); }, [carregar]);
 
+  /* Assina só a avaliação aberta, e só uma vez. A URL vale cinco minutos —
+     tempo de olhar, não de circular. Se o profissional deixar o card aberto e
+     voltar depois do almoço, a imagem quebra e ele fecha e abre de novo. É o
+     preço de a URL não sobreviver ao print da tela. */
+  useEffect(() => {
+    if (!aberta || urls[aberta]) return;
+    const a = avals.find((x) => x.id === aberta);
+    if (!a?.fotos) return;
+
+    let vivo = true;
+    assinarFotos(a.fotos).then((u) => {
+      if (vivo && Object.keys(u).length) setUrls((x) => ({ ...x, [aberta]: u }));
+    });
+    return () => { vivo = false; };
+  }, [aberta, avals, urls]);
+
   const link = `${window.location.origin}/a/${tokenAtual}`;
 
   const linkExpirado = expiraEm ? new Date(expiraEm) < new Date() : false;
@@ -3634,21 +4070,94 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
     }
   };
 
+  /* Excluir a linha sem excluir os arquivos deixaria a foto do corpo de alguém
+     no bucket, sem nenhuma linha no banco apontando para ela — invisível para
+     o app e para o próprio profissional, mas lá. Apaga o arquivo primeiro: se
+     o DELETE da linha falhar, dá para tentar de novo; se o remove do Storage
+     falhar depois da linha sumir, o caminho se perdeu junto com ela. */
   const remover = async () => {
+    const alvo = avals.find((a) => a.id === excluirAval);
+    const paths = Object.values(alvo?.fotos || {}).filter(Boolean);
+
+    if (paths.length) {
+      const { error } = await supabase.storage.from(BUCKET_FOTOS).remove(paths);
+      if (error) {
+        toast('Não foi possível remover as fotos. A avaliação foi mantida.', 'erro');
+        setExcluirAval(null);
+        return;
+      }
+    }
+
     await supabase.from('al_avaliacoes').delete().eq('id', excluirAval);
     setExcluirAval(null);
     carregar();
     toast('Avaliação removida', 'ok');
   };
 
+  /* Cláusula (c): exclusão a qualquer momento, sem justificativa, sem afetar o
+     acompanhamento. Sem esta tela, o termo prometia algo que o app não fazia —
+     e um direito que não tem botão não é um direito, é uma frase. */
+  const removerFoto = async () => {
+    if (!excluirFoto) return;
+    const { avalId, pose, path } = excluirFoto;
+
+    const { error: eSt } = await supabase.storage.from(BUCKET_FOTOS).remove([path]);
+    if (eSt) {
+      toast('Não foi possível remover a foto', 'erro');
+      setExcluirFoto(null);
+      return;
+    }
+
+    const { error } = await supabase.rpc('al_remover_foto', {
+      p_avaliacao: avalId, p_pose: pose,
+    });
+    setExcluirFoto(null);
+    if (error) { toast('A foto foi apagada, mas o registro não atualizou. Recarregue.', 'erro'); return; }
+
+    setUrls((u) => {
+      const n = { ...u };
+      if (n[avalId]) { const { [pose]: _, ...r } = n[avalId]; n[avalId] = r; }
+      return n;
+    });
+    carregar();
+    toast('Foto excluída', 'ok');
+  };
+
   // O relatório recebe a base assinada E os adendos. Passar só `anam`
   // faria o PDF mostrar a resposta da assinatura para um campo que já foi
   // corrigido — o mesmo buraco do PAR-Q, só que impresso e entregue.
-  const relatorio = () => {
+  /* As fotos vão EMBUTIDAS no HTML, em base64 — não como URL assinada.
+     O relatório é window.print() logo depois do document.write: URL assinada
+     é requisição de rede, e o diálogo de impressão dispararia antes de a
+     imagem decodificar. Daria caixa em branco em algumas máquinas e foto em
+     outras, que é o pior modo de falha — funciona na sua e quebra na do
+     colega. Embutido, o PDF também sobrevive à expiração da URL, o que
+     importa para um arquivo que vai por WhatsApp. */
+  const relatorio = async () => {
     if (!avals.length) return toast('Nenhuma avaliação para exportar', 'erro');
+
+    const primeira = avals[avals.length - 1];
+    const ultima   = avals[0];
+    const temFoto  = primeira?.fotos || ultima?.fotos;
+
+    setGerando(true);
+    let fotosIni = {};
+    let fotosFim = {};
+
+    if (temFoto && avals.length > 1) {
+      // Se as fotos falharem, o relatório sai sem elas. Um PDF sem o
+      // comparativo em imagem ainda é um PDF útil; nenhum PDF não é.
+      [fotosIni, fotosFim] = await Promise.all([
+        fotosEmBase64(primeira.fotos),
+        fotosEmBase64(ultima.fotos),
+      ]);
+    }
+    setGerando(false);
+
     gerarRelatorio({
       aluno, perfil, avaliacoes: avals,
       anamnese: anam, adendos, anamneseEfetiva,
+      fotosIni, fotosFim,
     });
   };
 
@@ -3681,12 +4190,14 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
 
   if (nova) return (
     <Avaliacao aluno={aluno} perfil={perfil} ultima={avals[0]} toast={toast}
+      anamnese={anam}
       aoSalvar={() => { setNova(false); carregar(); }}
       aoCancelar={() => setNova(false)} />
   );
 
   if (editar) return (
     <Avaliacao aluno={aluno} perfil={perfil} edicao={editar} toast={toast}
+      anamnese={anam}
       aoSalvar={() => { setEditar(null); carregar(); }}
       aoCancelar={() => setEditar(null)} />
   );
@@ -3779,7 +4290,7 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
                 </Cart>
               )}
 
-              <Btn variante="2" cheio onClick={relatorio}>
+              <Btn variante="2" cheio onClick={relatorio} carregando={gerando}>
                 <IcoDoc size={17} /> Gerar relatório em PDF
               </Btn>
 
@@ -3865,6 +4376,58 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
                                 {a.observacoes.split('\n').map((l, j) => (
                                   <div key={j}>{l}</div>
                                 ))}
+                              </div>
+                            )}
+
+                            {a.fotos && Object.keys(a.fotos).length > 0 && (
+                              <div className="pilha g2">
+                                <span className="res-k">Registro fotográfico</span>
+                                <div style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))',
+                                  gap: 'var(--e3)',
+                                }}>
+                                  {POSES.filter(({ k }) => a.fotos[k]).map(({ k, l }) => {
+                                    const src = urls[a.id]?.[k];
+                                    return (
+                                      <div key={k} className="pilha g1">
+                                        {src ? (
+                                          <img src={src} alt={`${l} — ${a.data}`}
+                                            style={{
+                                              width: '100%', aspectRatio: '3 / 4',
+                                              objectFit: 'cover',
+                                              borderRadius: 'var(--r2)', display: 'block',
+                                              border: '1px solid var(--linha)',
+                                            }} />
+                                        ) : (
+                                          <Esqueleto h="auto" style={{
+                                            aspectRatio: '3 / 4',
+                                            borderRadius: 'var(--r2)',
+                                          }} />
+                                        )}
+                                        <div className="fila g2" style={{
+                                          justifyContent: 'space-between',
+                                          alignItems: 'center',
+                                        }}>
+                                          <span className="dica">{l}</span>
+                                          <button type="button"
+                                            title={`Excluir foto de ${l.toLowerCase()}`}
+                                            onClick={() => setExcluirFoto({
+                                              avalId: a.id, pose: k,
+                                              path: a.fotos[k], rotulo: l,
+                                            })}
+                                            style={{
+                                              border: 0, background: 'transparent',
+                                              color: 'var(--tenue)', cursor: 'pointer',
+                                              display: 'flex', padding: 2,
+                                            }}>
+                                            <IcoLixo size={14} />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             )}
 
@@ -4253,7 +4816,27 @@ function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
         </>}>
         <p style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
           As medidas desta avaliação serão apagadas e o histórico do aluno
-          será recalculado sem ela. Não dá para desfazer.
+          será recalculado sem ela.
+          {Object.keys(avals.find((a) => a.id === excluirAval)?.fotos || {}).length > 0
+            && ' As fotos desta avaliação também serão apagadas.'}
+          {' '}Não dá para desfazer.
+        </p>
+      </Modal>
+
+      {/* Direito do aluno, cláusula (c) do termo: exclusão a qualquer momento,
+          sem justificativa. Por isso não há campo de motivo aqui — pedir motivo
+          seria exigir justificativa para um direito que o termo diz não exigir
+          nenhuma. */}
+      <Modal aberto={!!excluirFoto} aoFechar={() => setExcluirFoto(null)}
+        titulo="Excluir esta foto?"
+        rodape={<>
+          <Btn variante="2" onClick={() => setExcluirFoto(null)}>Cancelar</Btn>
+          <Btn variante="x" onClick={removerFoto}>Excluir foto</Btn>
+        </>}>
+        <p style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
+          A foto de {excluirFoto?.rotulo?.toLowerCase()} será apagada
+          definitivamente. As medidas da avaliação continuam intactas, e o
+          acompanhamento segue normalmente. Não dá para desfazer.
         </p>
       </Modal>
 
@@ -4935,6 +5518,21 @@ export default function App() {
   // continuava alcançável pelo cliente com a anon key.
   const arquivarAluno = async () => {
     setArquivando(true);
+
+    /* Arquivar apaga as fotos. Não é o mesmo que apagar a anamnese — aquela é
+       prova, e a 005 existe justamente para protegê-la. Foto de corpo é o
+       oposto: é o dado mais sensível que o app guarda, e o aluno que saiu não
+       tem motivo nenhum para continuar com o corpo dele num bucket. Manter
+       "por precaução" seria guardar o que ninguém pediu para guardar.
+
+       O texto do arquivamento na tela diz isso, e diz antes do clique. */
+    const { data: paths } = await supabase.rpc('al_fotos_do_aluno', {
+      p_aluno: aluno.id,
+    });
+    if (paths?.length) {
+      await supabase.storage.from(BUCKET_FOTOS).remove(paths);
+    }
+
     const { error } = await supabase.rpc('al_arquivar_aluno', {
       p_aluno: aluno.id,
       p_motivo: motivoArquivo.trim() || null,
@@ -5042,7 +5640,7 @@ export default function App() {
           <p style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
             <strong>{aluno?.nome}</strong> sai da lista e deixa de ocupar vaga
             no plano. As avaliações, a anamnese e a assinatura continuam
-            guardadas — nada é apagado, e dá para reativar quando quiser.
+            guardadas, e dá para reativar quando quiser.
           </p>
 
           <div className="selado">
@@ -5057,6 +5655,18 @@ export default function App() {
                 é ele que responde por você.
               </div>
             </div>
+          </div>
+
+          {/* Isto precisa estar ANTES do clique, não depois. A foto some e não
+              volta nem reativando — e um aviso que aparece só no toast já é
+              tarde demais para quem queria manter. */}
+          <div className="aviso aviso-alerta fila g3">
+            <IcoAviso size={18} />
+            <span>
+              As fotos das avaliações são apagadas definitivamente. As medidas
+              e os números ficam; as imagens não. Reativar o aluno não traz as
+              fotos de volta.
+            </span>
           </div>
 
           <Campo rot="Motivo" id="motivo-arq"
