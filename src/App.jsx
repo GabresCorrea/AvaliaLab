@@ -280,6 +280,8 @@ const ROTULO_EVENTO = {
   // anterior não foi preservado. Registrar isso é mais honesto do que
   // deixar a trilha parecer completa quando não é.
   avaliacao_editada_legado: 'Avaliação corrigida (antes do versionamento)',
+  aluno_arquivado:    'Aluno arquivado',
+  aluno_desarquivado: 'Aluno reativado',
 };
 
 // Eventos que carregam assinatura do aluno. Marcados com bolinha cheia
@@ -341,6 +343,15 @@ const descreverEvento = (h) => {
 
     case 'avaliacao_excluida':
       return `Medição de ${dt(d.data)} foi removida do histórico.`;
+
+    case 'aluno_arquivado':
+      return [
+        'Saiu da lista ativa. Avaliações, anamnese e assinatura preservadas',
+        d.motivo ? `Motivo: ${d.motivo}` : null,
+      ].filter(Boolean).join('. ') + '.';
+
+    case 'aluno_desarquivado':
+      return 'Voltou para a lista ativa.';
 
     default:
       return '';
@@ -967,6 +978,7 @@ const IcoRelogio = (p) => <Ico {...p} d={<><circle cx="12" cy="12" r="9"/><path 
 const IcoX       = (p) => <Ico {...p} d={<path d="M18 6 6 18M6 6l12 12"/>} />;
 const IcoFiltro  = (p) => <Ico {...p} d={<path d="M3 5h18l-7 8v6l-4 2v-8L3 5z"/>} />;
 const IcoEscudo  = (p) => <Ico {...p} d={<><path d="M12 3 4 6v6c0 4.5 3.2 8.3 8 9 4.8-.7 8-4.5 8-9V6l-8-3z"/><path d="m9 12 2 2 4-4"/></>} />;
+const IcoCaixa   = (p) => <Ico {...p} d={<><path d="M3 7h18v3H3z"/><path d="M5 10v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9"/><path d="M10 14h4"/></>} />;
 const IcoHistorico = (p) => <Ico {...p} d={<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M3.5 9a9 9 0 0 1 1.5-3"/></>} />;
 const IcoNota    = (p) => <Ico {...p} d={<><path d="M11 4H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-5"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>} />;
 
@@ -3396,7 +3408,7 @@ function AnamnesePublica({ token }) {
    FICHA DO ALUNO
    ─────────────────────────────────────────────────────────────── */
 
-function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
+function Ficha({ aluno, perfil, aoVoltar, aoArquivar, aoDesarquivar, toast }) {
   const [aba, setAba]       = useState('avaliacoes');
   const [avals, setAvals]   = useState([]);
   const [anam, setAnam]     = useState(null);
@@ -3576,10 +3588,25 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
             {aluno.telefone && ` · ${aluno.telefone}`}
           </div>
         </div>
-        <Btn variante="1" onClick={() => setNova(true)}>
-          <IcoMais size={16} /> Avaliação
-        </Btn>
+        {/* Arquivado não recebe avaliação nova. O histórico continua
+            todo aberto para leitura, exportação e consulta — só não
+            avança. Para voltar a avaliar, reative. */}
+        {!aluno.arquivado_em && (
+          <Btn variante="1" onClick={() => setNova(true)}>
+            <IcoMais size={16} /> Avaliação
+          </Btn>
+        )}
       </div>
+
+      {aluno.arquivado_em && (
+        <div className="aviso aviso-info fila g3">
+          <IcoCaixa size={18} />
+          <span>
+            Aluno arquivado. O histórico, a anamnese e o relatório continuam
+            disponíveis. Para lançar avaliação nova, reative no fim da página.
+          </span>
+        </div>
+      )}
 
       <Abas
         opcoes={[
@@ -3775,6 +3802,7 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
 
                   <Btn variante={linkExpirado ? '1' : '3'} tam="p"
                     carregando={renovando} onClick={renovarLink}
+                    disabled={!!aluno.arquivado_em}
                     style={linkExpirado ? {} : { alignSelf: 'flex-start' }}>
                     Gerar link novo
                   </Btn>
@@ -3895,15 +3923,19 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
                     </span>
                   </div>
 
-                  <div className="fila g2" style={{ flexWrap: 'wrap' }}>
-                    <Btn variante="2" tam="p"
-                      carregando={renovando} onClick={renovarLink}>
-                      <IcoCopia size={15} /> Gerar link de adendo
-                    </Btn>
-                    <Btn variante="3" tam="p" onClick={() => setNovoAdendo(true)}>
-                      Registrar relato
-                    </Btn>
-                  </div>
+                  {/* Arquivar queima o token (ver al_arquivar_aluno). Aluno
+                      arquivado não deve ter link de anamnese circulando. */}
+                  {!aluno.arquivado_em && (
+                    <div className="fila g2" style={{ flexWrap: 'wrap' }}>
+                      <Btn variante="2" tam="p"
+                        carregando={renovando} onClick={renovarLink}>
+                        <IcoCopia size={15} /> Gerar link de adendo
+                      </Btn>
+                      <Btn variante="3" tam="p" onClick={() => setNovoAdendo(true)}>
+                        Registrar relato
+                      </Btn>
+                    </div>
+                  )}
 
                   {tokenAtual && !linkExpirado && (
                     <div className="fila g2">
@@ -4027,10 +4059,33 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
       )}
 
       <hr className="linha" />
-      <div>
-        <Btn variante="x" tam="p" onClick={aoExcluir}>
-          <IcoLixo size={15} /> Excluir aluno
-        </Btn>
+      <div className="pilha g2">
+        {aluno.arquivado_em ? (
+          <>
+            <div className="aviso aviso-info fila g3">
+              <IcoEscudo size={18} />
+              <span>
+                Aluno arquivado em{' '}
+                {new Date(aluno.arquivado_em).toLocaleDateString('pt-BR')}.
+                Tudo continua guardado. Reative para voltar a lançar avaliações.
+              </span>
+            </div>
+            <Btn variante="2" tam="p" onClick={aoDesarquivar}
+              style={{ alignSelf: 'flex-start' }}>
+              Reativar aluno
+            </Btn>
+          </>
+        ) : (
+          <>
+            <Btn variante="3" tam="p" onClick={aoArquivar}
+              style={{ alignSelf: 'flex-start' }}>
+              <IcoCaixa size={15} /> Arquivar aluno
+            </Btn>
+            <span className="dica">
+              Sai da lista e libera vaga no plano. Nada é apagado.
+            </span>
+          </>
+        )}
       </div>
 
       <Modal aberto={!!excluirAval} aoFechar={() => setExcluirAval(null)}
@@ -4163,6 +4218,9 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
 
   const carregar = useCallback(async () => {
     setLoad(true);
+    // Traz ativos e arquivados. A separação é feita no filtro, não na
+    // query: o arquivado precisa continuar abrível — é lá que estão a
+    // anamnese assinada e o histórico dele.
     const { data: as } = await supabase.from('al_alunos')
       .select('*').eq('profile_id', perfil.id).order('nome');
     const lista = as || [];
@@ -4196,7 +4254,13 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
 
   useEffect(() => { carregar(); }, [carregar, recarregar]);
 
-  const noLimite = perfil.plano === 'free' && alunos.length >= LIMITE_FREE;
+  // Arquivado não conta. É essa decisão que faz o arquivamento funcionar:
+  // se arquivar não liberasse vaga, quem batesse no limite iria procurar
+  // como excluir de verdade — e o incentivo para destruir a anamnese
+  // assinada voltaria pela porta dos fundos.
+  const ativos = alunos.filter((a) => !a.arquivado_em);
+  const arquivados = alunos.filter((a) => a.arquivado_em);
+  const noLimite = perfil.plano === 'free' && ativos.length >= LIMITE_FREE;
 
   const criar = async () => {
     if (!f.nome.trim()) return toast('Informe o nome do aluno', 'erro');
@@ -4226,13 +4290,17 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
   const filtrados = alunos
     .filter((a) => !busca || semAcento(a.nome).includes(semAcento(busca)))
     .filter((a) => {
+      // Arquivado tem aba própria. Nas outras, sai da frente — o ponto
+      // de arquivar é justamente não competir com quem está em treino.
+      if (filtro === 'arquivados') return !!a.arquivado_em;
+      if (a.arquivado_em) return false;
       if (filtro === 'pendente') return !a._ultima || status(a).tom !== 'bom';
       if (filtro === 'sem-anamnese') return !a._anamnese;
       return true;
     });
 
-  const pendentes = alunos.filter((a) => !a._ultima || status(a).tom !== 'bom').length;
-  const semAnam = alunos.filter((a) => !a._anamnese).length;
+  const pendentes = ativos.filter((a) => !a._ultima || status(a).tom !== 'bom').length;
+  const semAnam = ativos.filter((a) => !a._anamnese).length;
 
   return (
     <div className="pilha g5">
@@ -4240,7 +4308,8 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
         <div>
           <h1 className="tit t1">Alunos</h1>
           <div style={{ fontSize: 13.5, color: 'var(--sombra-txt)', marginTop: 3 }}>
-            {alunos.length} cadastrado{alunos.length === 1 ? '' : 's'}
+            {ativos.length} ativo{ativos.length === 1 ? '' : 's'}
+            {arquivados.length > 0 && ` · ${arquivados.length} arquivado${arquivados.length === 1 ? '' : 's'}`}
             {perfil.plano === 'free' && ` · limite de ${LIMITE_FREE} no plano grátis`}
           </div>
         </div>
@@ -4254,7 +4323,9 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
           <IcoAviso size={18} />
           <div>
             <strong>Limite do plano grátis atingido.</strong>{' '}
-            Para cadastrar mais alunos, será preciso assinar.
+            Arquive um aluno que não está mais treinando para abrir vaga —
+            nada dele é apagado, e dá para reativar depois. Ou assine para
+            cadastrar sem limite.
           </div>
         </div>
       )}
@@ -4276,9 +4347,12 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
 
           <div className="fila g2" style={{ flexWrap: 'wrap' }}>
             {[
-              { v: 'todos', l: 'Todos', n: alunos.length },
+              { v: 'todos', l: 'Todos', n: ativos.length },
               { v: 'pendente', l: 'A reavaliar', n: pendentes },
               { v: 'sem-anamnese', l: 'Sem anamnese', n: semAnam },
+              ...(arquivados.length
+                ? [{ v: 'arquivados', l: 'Arquivados', n: arquivados.length }]
+                : []),
             ].map((o) => (
               <Btn key={o.v} tam="p"
                 variante={filtro === o.v ? '1' : '2'}
@@ -4317,17 +4391,33 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
       ) : (
         <div className="pilha g2">
           {filtrados.map((a) => {
+            const arq = !!a.arquivado_em;
             const st = status(a);
             return (
-              <button key={a.id} className="item" onClick={() => aoAbrir(a)}>
+              <button key={a.id} className="item" onClick={() => aoAbrir(a)}
+                style={arq ? { opacity: .72 } : undefined}>
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 600 }}>{a.nome}</div>
                   <div className="fila g2" style={{ marginTop: 4, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12.5, color: 'var(--sombra-txt)' }}>
                       {idadeDe(a.nascimento)} anos
                     </span>
-                    <Selo tom={st.tom}>{st.l}</Selo>
-                    {!a._anamnese && <Selo>Sem anamnese</Selo>}
+                    {/* Arquivado não é "vencido": ele não deve ser
+                        reavaliado. Mostrar cobrança de reavaliação aqui
+                        seria ruído. */}
+                    {arq ? (
+                      <Selo>
+                        Arquivado em{' '}
+                        {new Date(a.arquivado_em).toLocaleDateString('pt-BR', {
+                          month: '2-digit', year: 'numeric',
+                        })}
+                      </Selo>
+                    ) : (
+                      <>
+                        <Selo tom={st.tom}>{st.l}</Selo>
+                        {!a._anamnese && <Selo>Sem anamnese</Selo>}
+                      </>
+                    )}
                   </div>
                 </div>
                 <span style={{ color: 'var(--tenue)', display: 'flex' }}>
@@ -4645,6 +4735,8 @@ export default function App() {
   const [recarregar, setRecarregar] = useState(0);
   const [toastMsg, setToastMsg] = useState(null);
   const [confirmar, setConfirmar] = useState(false);
+  const [motivoArquivo, setMotivoArquivo] = useState('');
+  const [arquivando, setArquivando] = useState(false);
 
   const toast = useCallback((msg, tipo) => {
     setToastMsg({ msg, tipo });
@@ -4676,12 +4768,50 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, [token, carregarPerfil]);
 
-  const excluirAluno = async () => {
-    await supabase.from('al_alunos').delete().eq('id', aluno.id);
+  // Arquivar, não excluir. O DELETE destruía a anamnese assinada junto
+  // (FK em cascata) — o documento com a assinatura, o termo aceito e a
+  // versão congelada. A auditoria sobrevivia e dizia que houve uma
+  // anamnese, mas a prova ia embora.
+  //
+  // A migração 005 fecha o DELETE no banco também: FK vira RESTRICT e o
+  // grant é revogado. Não basta tirar o botão da tela — o caminho
+  // continuava alcançável pelo cliente com a anon key.
+  const arquivarAluno = async () => {
+    setArquivando(true);
+    const { error } = await supabase.rpc('al_arquivar_aluno', {
+      p_aluno: aluno.id,
+      p_motivo: motivoArquivo.trim() || null,
+    });
+    setArquivando(false);
+    if (error) { toast('Não foi possível arquivar', 'erro'); return; }
     setConfirmar(false);
+    setMotivoArquivo('');
     setAluno(null);
     setRecarregar((r) => r + 1);
-    toast('Aluno excluído', 'ok');
+    toast('Aluno arquivado', 'ok');
+  };
+
+  // Reativar ocupa vaga de volta. O limite é checado no servidor, não
+  // aqui: a checagem no cliente é conveniência, não controle.
+  const desarquivarAluno = async () => {
+    const { error } = await supabase.rpc('al_desarquivar_aluno', {
+      p_aluno: aluno.id,
+    });
+    if (error) {
+      const m = error.message || '';
+      if (m.includes('limite_free')) {
+        toast(
+          `O plano grátis vai até ${LIMITE_FREE} alunos ativos. `
+          + 'Arquive outro antes de reativar este.', 'erro'
+        );
+        return;
+      }
+      toast('Não foi possível reativar', 'erro');
+      return;
+    }
+    setAluno({ ...aluno, arquivado_em: null });
+    setRecarregar((r) => r + 1);
+    toast('Aluno reativado', 'ok');
   };
 
   if (token) return <><Estilo /><AnamnesePublica token={token} /></>;
@@ -4734,7 +4864,8 @@ export default function App() {
           ) : aluno ? (
             <Ficha aluno={aluno} perfil={perfil} toast={toast}
               aoVoltar={() => setAluno(null)}
-              aoExcluir={() => setConfirmar(true)} />
+              aoArquivar={() => setConfirmar(true)}
+              aoDesarquivar={desarquivarAluno} />
           ) : (
             <Lista perfil={perfil} toast={toast} recarregar={recarregar}
               aoAbrir={setAluno} />
@@ -4743,15 +4874,41 @@ export default function App() {
       </div>
 
       <Modal aberto={confirmar} aoFechar={() => setConfirmar(false)}
-        titulo="Excluir aluno?"
+        titulo="Arquivar aluno?"
         rodape={<>
           <Btn variante="2" onClick={() => setConfirmar(false)}>Cancelar</Btn>
-          <Btn variante="x" onClick={excluirAluno}>Excluir tudo</Btn>
+          <Btn variante="1" onClick={arquivarAluno} carregando={arquivando}>
+            Arquivar
+          </Btn>
         </>}>
-        <p style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
-          Todas as avaliações e a anamnese de <strong>{aluno?.nome}</strong> serão
-          apagadas junto. Não dá para desfazer.
-        </p>
+        <div className="pilha g4">
+          <p style={{ fontSize: 14.5, color: 'var(--grafite)', lineHeight: 1.6 }}>
+            <strong>{aluno?.nome}</strong> sai da lista e deixa de ocupar vaga
+            no plano. As avaliações, a anamnese e a assinatura continuam
+            guardadas — nada é apagado, e dá para reativar quando quiser.
+          </p>
+
+          <div className="selado">
+            <span style={{ color: 'var(--verde)', flexShrink: 0 }}>
+              <IcoEscudo size={20} />
+            </span>
+            <div>
+              <div className="selado-t">A anamnese assinada é preservada</div>
+              <div className="selado-d">
+                É o documento que registra o que o aluno declarou e o termo
+                que ele aceitou. Se houver qualquer questionamento depois,
+                é ele que responde por você.
+              </div>
+            </div>
+          </div>
+
+          <Campo rot="Motivo" id="motivo-arq"
+            dica="Opcional. Fica registrado no histórico.">
+            <input id="motivo-arq" value={motivoArquivo}
+              placeholder="Ex.: parou de treinar em março"
+              onChange={(e) => setMotivoArquivo(e.target.value)} />
+          </Campo>
+        </div>
       </Modal>
 
       <Toast msg={toastMsg?.msg} tipo={toastMsg?.tipo} />
