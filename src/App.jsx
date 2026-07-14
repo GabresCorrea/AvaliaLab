@@ -916,6 +916,7 @@ const IcoCopia   = (p) => <Ico {...p} d={<><rect x="9" y="9" width="12" height="
 const IcoUsuario = (p) => <Ico {...p} d={<><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></>} />;
 const IcoSair    = (p) => <Ico {...p} d={<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></>} />;
 const IcoLixo    = (p) => <Ico {...p} d={<><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></>} />;
+const IcoLapis   = (p) => <Ico {...p} d={<><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m14.5 7.5 2 2"/></>} />;
 const IcoAviso   = (p) => <Ico {...p} d={<><path d="M12 3 2 20h20L12 3z"/><path d="M12 9v5M12 17.5v.5"/></>} />;
 const IcoImagem  = (p) => <Ico {...p} d={<><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.8"/><path d="m3 17 5-5 4 4 3-3 6 6"/></>} />;
 const IcoFogo    = (p) => <Ico {...p} d={<><path d="M12 22a6 6 0 0 0 6-6c0-4-3-5-3-9 0 0-3 1-3 4 0-2-2-3-2-3s-1 2-1 4c-1-1-2-2-2-2s-1 2-1 6a6 6 0 0 0 6 6z"/></>} />;
@@ -1313,10 +1314,46 @@ const suspeita = (valor, [min, max]) => {
   return v > 0 && (v < min || v > max);
 };
 
-function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
+/* Reabre as observações que foram fundidas numa string só.
+   Plano A: obs_partes, gravado desde a migração 003 — exato.
+   Plano B: avaliações antigas, sem obs_partes. Aí é parsing por
+   prefixo, e é falível: se o profissional escreveu "Perimetria:"
+   dentro do texto geral, cai no campo errado. Aceitável, porque
+   é uma vez só — ao salvar, obs_partes passa a existir. */
+const separarObs = (aval) => {
+  if (aval?.obs_partes) {
+    const p = aval.obs_partes;
+    return { obsAntro: p.antro || '', obsPerim: p.perim || '', obsGeral: p.geral || '' };
+  }
+  const linhas = (aval?.observacoes || '').split('\n');
+  const r = { obsAntro: '', obsPerim: '', obsGeral: [] };
+  for (const l of linhas) {
+    if (l.startsWith('Antropometria: ')) r.obsAntro = l.slice(15);
+    else if (l.startsWith('Perimetria: ')) r.obsPerim = l.slice(12);
+    else r.obsGeral.push(l);
+  }
+  return { ...r, obsGeral: r.obsGeral.join('\n').trim() };
+};
+
+function Avaliacao({ aluno, ultima, perfil, edicao, aoSalvar, aoCancelar, toast }) {
+  const editando = !!edicao;
+  // Rascunho é só para avaliação nova. Numa edição, o rascunho de
+  // outra avaliação não pode vazar por cima dos dados reais.
   const chave = RASCUNHO + aluno.id;
 
   const inicial = () => {
+    if (editando) {
+      return {
+        protocolo: edicao.protocolo,
+        data: edicao.data,
+        peso: edicao.peso ?? '',
+        altura: edicao.altura ?? '',
+        nivelAtiv: edicao.resultados?.nivelAtiv ?? 1.55,
+        dobras: edicao.dobras || {},
+        perim: edicao.perimetros || {},
+        ...separarObs(edicao),
+      };
+    }
     try {
       const salvo = sessionStorage.getItem(chave);
       if (salvo) return JSON.parse(salvo);
@@ -1343,8 +1380,9 @@ function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
   const idade = idadeDe(aluno.nascimento);
   const ativas = dobrasDoProtocolo(f.protocolo, aluno.sexo);
 
-  // Auto-save do rascunho
+  // Auto-save do rascunho — só para avaliação nova
   useEffect(() => {
+    if (editando) return;
     const t = setTimeout(() => {
       try {
         sessionStorage.setItem(chave, JSON.stringify(f));
@@ -1353,7 +1391,7 @@ function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
       } catch { /* storage cheio: segue sem rascunho */ }
     }, 700);
     return () => clearTimeout(t);
-  }, [f, chave]);
+  }, [f, chave, editando]);
 
   const set = (campo, valor) => setF((x) => ({ ...x, [campo]: valor }));
   const setDobra = (k, v) => setF((x) => ({ ...x, dobras: { ...x.dobras, [k]: v } }));
@@ -1388,8 +1426,7 @@ function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
       f.obsGeral,
     ].filter(Boolean).join('\n');
 
-    const { error } = await supabase.from('al_avaliacoes').insert({
-      aluno_id: aluno.id,
+    const campos = {
       data: f.data,
       peso: Number(f.peso),
       altura: Number(f.altura),
@@ -1398,17 +1435,32 @@ function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
       perimetros: f.perim,
       resultados: resultado,
       observacoes: obs,
-    });
+      // as três partes cruas, para reabrir o formulário sem parsing
+      obs_partes: { antro: f.obsAntro, perim: f.obsPerim, geral: f.obsGeral },
+    };
+
+    // Editar é update, não insert: não duplica a avaliação e não
+    // dispara al_trigger_avaliacao (que só escuta insert e delete).
+    // O carimbo editada_em fica; a auditoria, por decisão de projeto,
+    // não registra edição.
+    const { error } = editando
+      ? await supabase.from('al_avaliacoes')
+          .update({ ...campos, editada_em: new Date().toISOString() })
+          .eq('id', edicao.id)
+      : await supabase.from('al_avaliacoes')
+          .insert({ ...campos, aluno_id: aluno.id });
+
     setSalvando(false);
 
     if (error) { toast('Não foi possível salvar. Tente de novo.', 'erro'); return; }
-    sessionStorage.removeItem(chave);
-    toast('Avaliação registrada', 'ok');
+    if (!editando) sessionStorage.removeItem(chave);
+    toast(editando ? 'Avaliação atualizada' : 'Avaliação registrada', 'ok');
     aoSalvar();
   };
 
   const sair = () => {
-    const temDados = preenchidas > 0 || f.obsGeral || f.obsAntro;
+    // Editando, qualquer saída é perda de alteração: sempre confirma.
+    const temDados = editando || preenchidas > 0 || f.obsGeral || f.obsAntro;
     if (temDados) { setConfirmarSaida(true); return; }
     sessionStorage.removeItem(chave);
     aoCancelar();
@@ -1739,19 +1791,21 @@ function Avaliacao({ aluno, ultima, perfil, aoSalvar, aoCancelar, toast }) {
         <Btn variante="2" onClick={sair} type="button">Cancelar</Btn>
         <Btn variante="1" tam="g" cheio onClick={salvar}
           disabled={!resultado} carregando={salvando} type="button">
-          Salvar avaliação
+          {editando ? 'Salvar alterações' : 'Salvar avaliação'}
         </Btn>
       </div>
 
       <Modal aberto={confirmarSaida} aoFechar={() => setConfirmarSaida(false)}
-        titulo="Sair sem salvar?"
+        titulo={editando ? 'Descartar alterações?' : 'Sair sem salvar?'}
         rodape={<>
           <Btn variante="2" onClick={() => setConfirmarSaida(false)}>Continuar aqui</Btn>
           <Btn variante="x" onClick={descartar}>Descartar</Btn>
         </>}>
         <p style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--grafite)' }}>
-          O rascunho fica guardado enquanto esta aba estiver aberta.
-          Se descartar, as medidas desta avaliação se perdem.
+          {editando
+            ? 'A avaliação continua como estava. O que você alterou aqui se perde.'
+            : `O rascunho fica guardado enquanto esta aba estiver aberta.
+               Se descartar, as medidas desta avaliação se perdem.`}
         </p>
       </Modal>
     </div>
@@ -3252,6 +3306,7 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
   const [avals, setAvals]   = useState([]);
   const [anam, setAnam]     = useState(null);
   const [nova, setNova]     = useState(false);
+  const [editar, setEditar] = useState(null);   // avaliação sendo editada
   const [load, setLoad]     = useState(true);
   const [aberta, setAberta] = useState(null);
   const [excluirAval, setExcluirAval] = useState(null);
@@ -3322,6 +3377,12 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
     <Avaliacao aluno={aluno} perfil={perfil} ultima={avals[0]} toast={toast}
       aoSalvar={() => { setNova(false); carregar(); }}
       aoCancelar={() => setNova(false)} />
+  );
+
+  if (editar) return (
+    <Avaliacao aluno={aluno} perfil={perfil} edicao={editar} toast={toast}
+      aoSalvar={() => { setEditar(null); carregar(); }}
+      aoCancelar={() => setEditar(null)} />
   );
 
   const series = avals.length >= 2 ? (() => {
@@ -3486,7 +3547,11 @@ function Ficha({ aluno, perfil, aoVoltar, aoExcluir, toast }) {
                               </div>
                             )}
 
-                            <div>
+                            <div className="fila g2">
+                              <Btn variante="2" tam="p"
+                                onClick={() => setEditar(a)}>
+                                <IcoLapis size={15} /> Editar
+                              </Btn>
                               <Btn variante="x" tam="p"
                                 onClick={() => setExcluirAval(a.id)}>
                                 <IcoLixo size={15} /> Excluir avaliação
