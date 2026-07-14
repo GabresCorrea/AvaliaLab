@@ -322,6 +322,122 @@ const abrirWhats = ({ telefone, texto }) => {
    `fotos` entra no mesmo insert. Nada é reescrito.
    ─────────────────────────────────────────────────────────────── */
 
+/* ───────────────────────────────────────────────────────────────
+   ZIP
+
+   Escrito à mão, sem biblioteca. São ~70 linhas, e a alternativa era
+   somar 40 KB de dependência ao bundle para usar um recurso que o
+   profissional aciona uma vez por ano.
+
+   Modo "store": sem compressão. Não é preguiça — o ZIP é quase todo JPEG,
+   que já está comprimido; deflate gastaria CPU para ganhar ~2%. O JSON e o
+   HTML comprimiriam bem, mas são a menor parte do peso.
+
+   Nota sobre CRC32: o formato exige, e não dá para trapacear — ZIP com CRC
+   errado é ZIP que o Windows se recusa a abrir. A tabela é gerada uma vez.
+   ─────────────────────────────────────────────────────────────── */
+
+const TABELA_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+const crc32 = (bytes) => {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) {
+    c = TABELA_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+};
+
+/* Nomes de arquivo. Acento e barra em nome de aluno viram caminho quebrado ou
+   pasta acidental — "Ana Maria / Silva" criaria um diretório dentro do ZIP. */
+const nomeSeguro = (s) => (s || 'sem-nome')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-zA-Z0-9-_ ]/g, '')
+  .trim().replace(/\s+/g, '-')
+  .slice(0, 60) || 'sem-nome';
+
+const criarZip = (arquivos) => {
+  const enc = new TextEncoder();
+  const locais = [];
+  const centrais = [];
+  let offset = 0;
+
+  // Data fixa em formato DOS. A data real de cada arquivo não interessa a
+  // ninguém aqui, e o campo é obrigatório.
+  const hora = 0x6000;  // 12:00
+  const dia  = 0x5AA1;  // 2025-05-01
+
+  for (const { nome, dados } of arquivos) {
+    const bytes = typeof dados === 'string' ? enc.encode(dados) : dados;
+    const nb = enc.encode(nome);
+    const crc = crc32(bytes);
+
+    const local = new Uint8Array(30 + nb.length);
+    const dv = new DataView(local.buffer);
+    dv.setUint32(0, 0x04034B50, true);   // assinatura
+    dv.setUint16(4, 20, true);           // versão mínima
+    dv.setUint16(6, 0x0800, true);       // flag: nome em UTF-8
+    dv.setUint16(8, 0, true);            // método: store
+    dv.setUint16(10, hora, true);
+    dv.setUint16(12, dia, true);
+    dv.setUint32(14, crc, true);
+    dv.setUint32(18, bytes.length, true);
+    dv.setUint32(22, bytes.length, true);
+    dv.setUint16(26, nb.length, true);
+    dv.setUint16(28, 0, true);
+    local.set(nb, 30);
+
+    const central = new Uint8Array(46 + nb.length);
+    const dc = new DataView(central.buffer);
+    dc.setUint32(0, 0x02014B50, true);
+    dc.setUint16(4, 20, true);
+    dc.setUint16(6, 20, true);
+    dc.setUint16(8, 0x0800, true);
+    dc.setUint16(10, 0, true);
+    dc.setUint16(12, hora, true);
+    dc.setUint16(14, dia, true);
+    dc.setUint32(16, crc, true);
+    dc.setUint32(20, bytes.length, true);
+    dc.setUint32(24, bytes.length, true);
+    dc.setUint16(28, nb.length, true);
+    dc.setUint32(42, offset, true);      // onde começa o cabeçalho local
+    central.set(nb, 46);
+
+    locais.push(local, bytes);
+    centrais.push(central);
+    offset += local.length + bytes.length;
+  }
+
+  const tamCentral = centrais.reduce((n, c) => n + c.length, 0);
+  const fim = new Uint8Array(22);
+  const df = new DataView(fim.buffer);
+  df.setUint32(0, 0x06054B50, true);
+  df.setUint16(8, arquivos.length, true);
+  df.setUint16(10, arquivos.length, true);
+  df.setUint32(12, tamCentral, true);
+  df.setUint32(16, offset, true);
+
+  return new Blob([...locais, ...centrais, fim], { type: 'application/zip' });
+};
+
+const baixarBlob = (blob, nome) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nome;
+  a.click();
+  // Sem revoke, o Blob inteiro — que pode ter centenas de MB — fica preso na
+  // memória da aba até ela fechar.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+
 const BUCKET_FOTOS = 'al-fotos';
 const POSES = [
   { k: 'frente', l: 'Frente' },
@@ -2406,7 +2522,7 @@ function completarResultados(aval) {
   return r;
 }
 
-function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese, fotosIni, fotosFim }) {
+function gerarRelatorio({ aluno, perfil, avaliacoes, anamnese, fotosIni, fotosFim, retornar }) {
   const ultima   = avaliacoes[0];
   const anterior = avaliacoes[1] || null;
   const primeira = avaliacoes[avaliacoes.length - 1];
@@ -3453,6 +3569,9 @@ ${anexoAssinatura}
 <\/script>
 </body></html>`;
 
+  // Export: devolve o HTML e não abre janela nenhuma.
+  if (retornar) return html;
+
   const w = window.open('', '_blank');
   if (!w) {
     alert('Permita pop-ups neste site para gerar o relatório.');
@@ -3461,6 +3580,20 @@ ${anexoAssinatura}
   w.document.write(html);
   w.document.close();
   return true;
+}
+
+/* O mesmo relatório, sem o script de impressão, para ir dentro do ZIP do
+   export. É deliberadamente a MESMA função: um segundo gerador de HTML
+   divergiria do primeiro na terceira vez que alguém mexesse no layout, e o
+   arquivo exportado deixaria de ser o documento que o aluno recebeu.
+
+   O script de print sai porque um HTML que abre o diálogo de impressão sozinho
+   ao ser clicado, três anos depois, numa pasta de backup, é hostil. */
+function montarRelatorioHTML(args) {
+  const html = gerarRelatorio({ ...args, retornar: true });
+  return typeof html === 'string'
+    ? html.replace(/<script>[\s\S]*?<\/script>/, '')
+    : null;
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -5208,6 +5341,233 @@ function Lista({ perfil, aoAbrir, toast, recarregar }) {
    PERFIL
    ─────────────────────────────────────────────────────────────── */
 
+/* ───────────────────────────────────────────────────────────────
+   EXPORTAR TUDO
+
+   O teste deste recurso não é "baixou um arquivo". É: se a AvaliaLab sumir
+   amanhã, o profissional consegue reconstruir a prática dele em outro lugar
+   com o que está dentro deste ZIP? Se a resposta for não, o export é teatro.
+
+   Isso muda três coisas em relação ao que o app mostra na tela:
+
+   1. Vão TODAS as avaliações, inclusive as substituídas. A Ficha filtra
+      `substituida_por is null` porque para o dia a dia existe uma avaliação
+      por data — mas o export é a trilha inteira, e exportar só as vigentes
+      jogaria fora exatamente a prova que a 005 foi escrita para preservar.
+
+   2. Vão os arquivos de foto, não os caminhos. O jsonb `fotos` guarda caminho
+      no Storage; fora do Supabase isso não aponta para lugar nenhum. Export
+      com caminho e sem arquivo não reconstrói nada.
+
+   3. Vão os alunos arquivados. Arquivado não é excluído — é justamente onde
+      está a anamnese assinada de quem parou de treinar.
+   ─────────────────────────────────────────────────────────────── */
+
+const exportarTudo = async ({ perfil, aoProgresso }) => {
+  const arquivos = [];
+  const passo = (t) => aoProgresso?.(t);
+
+  passo('Carregando alunos');
+  const { data: alunos, error: eA } = await supabase.from('al_alunos')
+    .select('*').eq('profile_id', perfil.id).order('nome');
+  if (eA) throw eA;
+
+  const ids = (alunos || []).map((a) => a.id);
+
+  passo('Carregando avaliações e anamneses');
+  const [
+    { data: avaliacoes }, { data: anamneses },
+    { data: adendos }, { data: termos },
+  ] = await Promise.all([
+    ids.length
+      // Sem o filtro de vigência, de propósito. Ver nota 1 acima.
+      ? supabase.from('al_avaliacoes').select('*')
+          .in('aluno_id', ids).order('data', { ascending: false })
+      : Promise.resolve({ data: [] }),
+    ids.length
+      ? supabase.from('al_anamneses').select('*').in('aluno_id', ids)
+      : Promise.resolve({ data: [] }),
+    ids.length
+      ? supabase.from('al_anamnese_adendos').select('*')
+          .in('aluno_id', ids).order('criado_em', { ascending: true })
+      : Promise.resolve({ data: [] }),
+    supabase.from('al_termos').select('*')
+      .eq('profile_id', perfil.id).order('versao', { ascending: true }),
+  ]);
+
+  passo('Carregando auditoria');
+  // A auditoria é por aluno (al_historico recebe p_aluno). Em série, e não em
+  // paralelo: 40 RPCs simultâneas derrubam o pooler do free tier, e o export
+  // falharia justamente para quem tem mais dado para exportar.
+  const auditoria = {};
+  for (const id of ids) {
+    const { data } = await supabase.rpc('al_historico', { p_aluno: id });
+    auditoria[id] = data || [];
+  }
+
+  const porAluno = (lista) => {
+    const m = {};
+    (lista || []).forEach((x) => { (m[x.aluno_id] ||= []).push(x); });
+    return m;
+  };
+  const avalDe   = porAluno(avaliacoes);
+  const anamDe   = Object.fromEntries((anamneses || []).map((a) => [a.aluno_id, a]));
+  const adendoDe = porAluno(adendos);
+
+  /* ── JSON ──
+     Um arquivo por tabela, mais um `dados-completos.json` com tudo aninhado.
+     Os dois, porque servem a leitores diferentes: quem for importar num outro
+     sistema quer as tabelas planas com as chaves estrangeiras intactas; quem
+     for só ler quer o aluno com as coisas dele junto. Duplicar o dado num
+     export custa alguns KB e evita que ele seja inútil para metade dos casos. */
+
+  const meta = {
+    gerado_em: new Date().toISOString(),
+    origem: 'AvaliaLab',
+    formato_versao: 1,
+    profissional: perfil.nome,
+    registro: perfil.cref,
+    totais: {
+      alunos: alunos?.length || 0,
+      avaliacoes: avaliacoes?.length || 0,
+      avaliacoes_vigentes: (avaliacoes || []).filter((a) => !a.substituida_por).length,
+      anamneses: anamneses?.length || 0,
+      adendos: adendos?.length || 0,
+      termos: termos?.length || 0,
+    },
+    // O que este ZIP contém e o que ele NÃO contém. Descobrir uma ausência
+    // seis meses depois, na hora de migrar, é pior do que ler agora.
+    notas: [
+      'As avaliações incluem as versões substituídas por correção. O campo substituida_por aponta para a versão que a sucedeu; as vigentes têm esse campo nulo.',
+      'O campo fotos de cada avaliação guarda o caminho original no Storage. Os arquivos correspondentes estão em alunos/<nome>/fotos/, nomeados por data e pose.',
+      'A assinatura da anamnese é uma imagem PNG em base64, embutida no JSON e salva também como arquivo em alunos/<nome>/assinatura.png.',
+      'O termo aceito por cada aluno está congelado dentro da própria anamnese (termo_texto e termo_versao), e é ele que vale — não a versão mais recente em termos.json.',
+      'Os relatórios .html são autocontidos: abrem offline, e imprimem como PDF pelo próprio navegador.',
+    ],
+  };
+
+  const json = (o) => JSON.stringify(o, null, 2);
+
+  arquivos.push({ nome: 'LEIA-ME.json', dados: json(meta) });
+  arquivos.push({ nome: 'dados/perfil.json', dados: json(perfil) });
+  arquivos.push({ nome: 'dados/alunos.json', dados: json(alunos || []) });
+  arquivos.push({ nome: 'dados/avaliacoes.json', dados: json(avaliacoes || []) });
+  arquivos.push({ nome: 'dados/anamneses.json', dados: json(anamneses || []) });
+  arquivos.push({ nome: 'dados/adendos.json', dados: json(adendos || []) });
+  arquivos.push({ nome: 'dados/termos.json', dados: json(termos || []) });
+  arquivos.push({ nome: 'dados/auditoria.json', dados: json(auditoria) });
+
+  arquivos.push({
+    nome: 'dados-completos.json',
+    dados: json({
+      ...meta,
+      perfil,
+      termos: termos || [],
+      alunos: (alunos || []).map((al) => ({
+        ...al,
+        anamnese: anamDe[al.id] || null,
+        adendos: adendoDe[al.id] || [],
+        avaliacoes: avalDe[al.id] || [],
+        auditoria: auditoria[al.id] || [],
+      })),
+    }),
+  });
+
+  /* ── Por aluno: relatório, assinatura, fotos ── */
+
+  // Nomes repetidos viram pastas repetidas, e a segunda sobrescreve a primeira
+  // silenciosamente dentro do ZIP. Dois "Ana Silva" não são erro de cadastro:
+  // são duas pessoas.
+  const usados = new Set();
+  const pastaDe = (al) => {
+    let base = nomeSeguro(al.nome);
+    if (usados.has(base)) base = `${base}-${al.id.slice(0, 6)}`;
+    usados.add(base);
+    return `alunos/${base}`;
+  };
+
+  let i = 0;
+  for (const al of (alunos || [])) {
+    i += 1;
+    passo(`Preparando ${al.nome} (${i}/${alunos.length})`);
+
+    const pasta = pastaDe(al);
+    const anam  = anamDe[al.id] || null;
+    const ads   = adendoDe[al.id] || [];
+    const todas = avalDe[al.id] || [];
+    const vig   = todas.filter((a) => !a.substituida_por);
+
+    arquivos.push({
+      nome: `${pasta}/dados.json`,
+      dados: json({
+        aluno: al, anamnese: anam, adendos: ads,
+        avaliacoes: todas, auditoria: auditoria[al.id] || [],
+      }),
+    });
+
+    // Assinatura como arquivo, além do base64 no JSON. É a prova, e prova
+    // precisa poder ser aberta com dois cliques — não extraída de um campo
+    // de texto de 40 KB.
+    if (anam?.assinatura?.startsWith('data:image')) {
+      const b64 = anam.assinatura.split(',')[1] || '';
+      try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+        arquivos.push({ nome: `${pasta}/assinatura.png`, dados: bytes });
+      } catch { /* assinatura corrompida não derruba o export */ }
+    }
+
+    // Fotos. Baixadas do Storage por URL assinada e gravadas como arquivo.
+    const comFoto = todas.filter((a) => a.fotos && Object.keys(a.fotos).length);
+    for (const av of comFoto) {
+      const urls = await assinarFotos(av.fotos, 600);
+      for (const [pose, url] of Object.entries(urls)) {
+        try {
+          const r = await fetch(url);
+          if (!r.ok) continue;
+          const buf = new Uint8Array(await r.arrayBuffer());
+          arquivos.push({
+            nome: `${pasta}/fotos/${av.data}-${pose}.jpg`,
+            dados: buf,
+          });
+        } catch { /* uma foto que não baixa não invalida o resto */ }
+      }
+    }
+
+    // Relatório. Só faz sentido com avaliação vigente — é o que ele imprime.
+    if (vig.length) {
+      const primeira = vig[vig.length - 1];
+      const ultima   = vig[0];
+      let fotosIni = {};
+      let fotosFim = {};
+      if (vig.length > 1 && (primeira.fotos || ultima.fotos)) {
+        [fotosIni, fotosFim] = await Promise.all([
+          fotosEmBase64(primeira.fotos),
+          fotosEmBase64(ultima.fotos),
+        ]);
+      }
+      const anamneseEfetiva = ads.reduce(
+        (acc, ad) => ({ ...acc, ...ad.respostas }),
+        anam?.respostas || {}
+      );
+      const html = montarRelatorioHTML({
+        aluno: al, perfil, avaliacoes: vig,
+        anamnese: anam, adendos: ads, anamneseEfetiva,
+        fotosIni, fotosFim,
+      });
+      if (html) arquivos.push({ nome: `${pasta}/relatorio.html`, dados: html });
+    }
+  }
+
+  passo('Montando o arquivo');
+  const zip = criarZip(arquivos);
+  const hoje = new Date().toISOString().slice(0, 10);
+  baixarBlob(zip, `avalialab-${nomeSeguro(perfil.nome)}-${hoje}.zip`);
+
+  return { arquivos: arquivos.length, alunos: alunos?.length || 0 };
+};
+
 function Perfil({ perfil, aoAtualizar, toast }) {
   const [f, setF] = useState({
     nome: perfil.nome || '', cref: perfil.cref || '', telefone: perfil.telefone || '',
@@ -5221,6 +5581,28 @@ function Perfil({ perfil, aoAtualizar, toast }) {
   const [termoSalvo, setTermoSalvo] = useState('');
   const [salvandoTermo, setSalvandoTermo] = useState(false);
   const [confirmarTermo, setConfirmarTermo] = useState(false);
+
+  const [exportando, setExportando] = useState(false);
+  const [progresso, setProgresso] = useState('');
+
+  const exportar = async () => {
+    setExportando(true);
+    setProgresso('Começando');
+    try {
+      const r = await exportarTudo({ perfil, aoProgresso: setProgresso });
+      toast(
+        `Export pronto. ${r.alunos} ${r.alunos === 1 ? 'aluno' : 'alunos'}, `
+        + `${r.arquivos} arquivos.`, 'ok'
+      );
+    } catch {
+      // Sem export parcial. Um ZIP incompleto que se parece com um completo é
+      // pior do que nenhum: o profissional apagaria a conta confiando nele.
+      toast('Não foi possível exportar. Nada foi baixado. Tente de novo.', 'erro');
+    } finally {
+      setExportando(false);
+      setProgresso('');
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -5407,6 +5789,48 @@ function Perfil({ perfil, aoAtualizar, toast }) {
             </div>
           </div>
           {perfil.plano === 'free' && <Selo tom="aco">Upgrade em breve</Selo>}
+        </div>
+      </Cart>
+
+      <Cart>
+        <div className="pilha g3">
+          <div>
+            <span className="olho">Seus dados</span>
+            <p className="dica" style={{ marginTop: 4 }}>
+              Baixa tudo num arquivo .zip: alunos, avaliações, anamneses,
+              assinaturas, termos, auditoria e fotos.
+            </p>
+          </div>
+
+          {/* Isto não é "backup", e a palavra importa. Backup é para quando dá
+              problema. Isto é para quando você quiser ir embora — e um app que
+              guarda a prática de alguém tem obrigação de deixar sair com ela
+              inteira. Sem pedir motivo, e sem esconder o botão em nenhum menu. */}
+          <div className="selado">
+            <span style={{ color: 'var(--verde)', flexShrink: 0 }}>
+              <IcoEscudo size={20} />
+            </span>
+            <div>
+              <div className="selado-t">Os dados são seus</div>
+              <div className="selado-d">
+                O export é completo o bastante para você reconstruir sua prática
+                em outro lugar. Os relatórios abrem em qualquer navegador,
+                offline, e imprimem como PDF. As fotos e as assinaturas vão como
+                arquivo, não como link — nada aqui depende da AvaliaLab continuar
+                existindo.
+              </div>
+            </div>
+          </div>
+
+          <Btn variante="2" cheio carregando={exportando} onClick={exportar}>
+            <IcoCaixa size={17} /> Exportar todos os dados
+          </Btn>
+
+          {exportando && (
+            <div className="dica" style={{ textAlign: 'center' }}>
+              {progresso}. Não feche esta aba.
+            </div>
+          )}
         </div>
       </Cart>
 
